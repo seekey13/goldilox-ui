@@ -439,7 +439,7 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                             local item_name, needed = parse_item_requirement(entry)
                             local have = get_item_count(item_name)
                             table.insert(items, { name = item_name, needed = needed, have = have })
-                        endCollapse commentComment on lines R437 to R442Copilot commented on Mar 17, 2026 Copilotboton Mar 17, 2026MediumMore actionsget_item_count scans inventory (and does multiple pcalls) for each required item and is called every frame while the UI is open. This can become a noticeable per-frame cost at high FPS. Consider scanning the inventory once per frame (or caching results with a short TTL / on inventory-change event) and then looking up counts per item name/id.ReactPositive FeedbackNegative FeedbackCopilot uses AI. Check for mistakes.Write a replyResolve comment
+                        end
 
                         -- Check if all items are satisfied for summary line coloring
                         local all_satisfied = true

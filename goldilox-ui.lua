@@ -43,7 +43,24 @@ local function get_current_target_name()
     return ent.Name
 end
 
-local function get_deadline()
+local function update_status()
+    local player = AshitaCore:GetMemoryManager():GetParty()
+    local char_id = player:GetMemberServerId(0)
+    if current_character_id ~= char_id then
+        current_character_id = char_id
+        status = settings.load(default_status)
+    end
+    if status == nil then
+        status = settings.load(default_status)
+    end
+
+    local now = os.time()
+    local deadline = math.floor((now + default_status.offset) / 86400) * 86400 + 86400 - default_status.offset
+
+    if status.version ~= default_status.version then
+        status = settings.load(default_status)
+        status.deadline = deadline
+        settings.save()
     elseif status.deadline ~= deadline then
         -- print(chat.header('Goldilox') .. 'Previous state was for a different day, resetting for today.')
         status.dailies = {}
@@ -69,6 +86,15 @@ local handlers = {
         end,
         status = function(data)
             return "Secret chest at " .. data.zone
+        end,
+    },
+    Murdox = {
+        talk = function(data, prev)
+            data.count = string.match(data.message, "kill (%d+)")
+            data.target = string.match(data.message, "%d+ (.+)!")
+            data.zone = string.match(data.message, "Go to (.+) and")
+            if prev and prev.remaining then
+                data.remaining = prev.remaining
             end
         end,
         status = function(data)
@@ -77,14 +103,6 @@ local handlers = {
                 "Kill " .. r .. " more " .. data.target .. " at " .. data.zone
                 .. " " .. chat.color1(6, "(" .. data.count .. " total)")
             )
-            -- else
-            --     return "Kill " .. data.count .. " " .. data.target .. " at " .. data.zone
-            -- end
-            -- -- local message = "Kill " .. data.count .. " " .. data.target .. " at " .. data.zone
-            -- -- if data.remaining ~= nil then
-            -- --     message = message + " " + chat.color1(6, "(" .. data.remaining  .." left)")
-            -- -- end
-            -- -- return message
         end,
     },
     Mistrix = {
@@ -96,7 +114,23 @@ local handlers = {
         end,
     },
     Saltlix = {
-    }
+        talk = function(data, prev)
+            data.target = string.match(data.message, "kill (.+)!")
+            data.zone = string.match(data.message, "Go to (.+) and")
+        end,
+        status = function(data)
+            return "Kill " .. data.target .. " at " .. data.zone
+        end,
+    },
+    Beetrix = {
+        talk = function(data, prev)
+            data.zone = string.match(data.message, "Go to (.-),")
+            data.item = string.match(data.message, "get %a+ (.+) and trade")
+        end,
+        status = function(data)
+            return "Trade " .. data.item .. " found at " .. data.zone
+        end,
+    },
 }
 
 local palalumin_quests = {
@@ -153,6 +187,9 @@ local function handle_gobbie_dialogue(e)  -- Sent under mode 9
     if handlers[npc] == nil then
         return
     end
+    update_status()
+    local data = {message = message}
+    if handlers[npc].talk then
         handlers[npc].talk(data, status.dailies[npc])
     end
     status.dailies[npc] = data
@@ -160,9 +197,33 @@ local function handle_gobbie_dialogue(e)  -- Sent under mode 9
 end
 
 local function handle_daily_quest_updates(e)  -- Sent under mode 121
-    --[[
-        You've killed enough Olden Treants, please return to Murdox to claim your reward!
-        You've killed Teporingo, please return to Saltlix to claim your reward!
+    -- "You've killed enough Olden Treants, please return to Murdox to claim your reward!"
+    -- "You've killed Teporingo, please return to Saltlix to claim your reward!"
+    local return_npc = string.match(e.message, "please return to (%a+) to claim your reward")
+    if return_npc then
+        update_status()
+        if status.dailies[return_npc] then
+            status.dailies[return_npc].status = 'return'
+            settings.save()
+        end
+        return
+    end
+
+    -- Handle individual goblin quest completion
+    local complete_npc = string.match(e.message, "(%a+).*quest complete")
+    if complete_npc and handlers[complete_npc] then
+        update_status()
+        if status.dailies[complete_npc] then
+            status.dailies[complete_npc].status = 'complete'
+            settings.save()
+        end
+        return
+    end
+
+    -- Handle Murdox kill count updates
+    local kills = string.match(e.message, "(%d+) .+ remaining")
+    if kills then
+        update_status()
         if status.dailies.Murdox then
             status.dailies.Murdox.remaining = kills
             settings.save()
@@ -170,9 +231,7 @@ local function handle_daily_quest_updates(e)  -- Sent under mode 121
         return
     end
 
-    --[[
-        Defeat Mobs 1/10 (Zdei in Grand Palace of HuXzoi)
-    ]]
+    -- Defeat Mobs 1/10 (Zdei in Grand Palace of HuXzoi)
     local pala_killed, pala_total, pala_target, pala_zone = string.match(e.message, "Defeat Mobs (%d+)/(%d+) %((.+) in (.+)%)")
     if pala_killed then
         update_status()
@@ -284,6 +343,9 @@ ashita.events.register('text_in', 'text_in_cb', function (e)
     end
 end)
 
+ashita.events.register('command', 'command_cb', function(e)
+    local args = e.command:args()
+    if #args == 0 then
         return
     end
 
