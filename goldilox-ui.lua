@@ -28,6 +28,13 @@ local ZONE_HUXZOI = 34
 local DIAMOND = "\129\158"
 local FULL_DIAMOND = "\129\159"
 
+-- Strip Ashita chat color escape sequences from a string
+local function strip_colors(s)
+    s = s:gsub("\x1E.-\x1E", ""):gsub("\x1F.-\x1F", "")
+    s = s:gsub("\30.", ""):gsub("\31.", "")
+    return s
+end
+
 -- Get the name of the player's current target (extracted from targets.lua logic)
 local function get_current_target_name()
     local target = AshitaCore:GetMemoryManager():GetTarget()
@@ -310,6 +317,7 @@ local function handle_daily_quest_updates(e)  -- Sent under mode 121
         update_status()
         status.goldilox_time = status.deadline
         settings.save()
+        return
     end
 end
 
@@ -344,6 +352,21 @@ end
 ashita.events.register('text_in', 'text_in_cb', function (e)
     -- Early exit for injected messages
     if e.injected then
+        return
+    end
+
+    -- Handle secret chest /huh direction hint (can arrive on any channel)
+    -- "You sense a secret chest is far in the North direction!"
+    local clean_msg = strip_colors(e.message)
+    local distance, direction = string.match(clean_msg, "You sense a secret chest is (.+) in the (.+) direction")
+    if distance and direction then
+        update_status()
+        if status.dailies.Fishstix then
+            -- Title-case the distance word
+            local titled_distance = distance:sub(1,1):upper() .. distance:sub(2):lower()
+            status.dailies.Fishstix.hint = titled_distance .. " " .. direction
+            settings.save()
+        end
         return
     end
 

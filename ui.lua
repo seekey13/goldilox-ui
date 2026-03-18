@@ -130,6 +130,27 @@ local function draw_link(text, color, url, tooltip)
     end
 end
 
+-- Draw colored, underlined text that sends a game command on click
+local function draw_command_link(text, color, command, tooltip)
+    imgui.TextColored(color, text)
+    -- Underline beneath the text
+    local min_x, min_y = imgui.GetItemRectMin()
+    local max_x, max_y = imgui.GetItemRectMax()
+    local draw_list = imgui.GetWindowDrawList()
+    local a = math.floor((color[4] or 1.0) * 255)
+    local b = math.floor((color[3] or 0) * 255)
+    local g = math.floor((color[2] or 0) * 255)
+    local r = math.floor((color[1] or 0) * 255)
+    local col_u32 = bit.bor(bit.lshift(a, 24), bit.lshift(b, 16), bit.lshift(g, 8), r)
+    draw_list:AddLine({ min_x, max_y }, { max_x, max_y }, col_u32, 1.0)
+    if imgui.IsItemHovered() then
+        imgui.SetTooltip(tooltip or command)
+    end
+    if imgui.IsItemClicked(0) then
+        AshitaCore:GetChatManager():QueueCommand(1, command)
+    end
+end
+
 -- Draw a zone name as a clickable bg-wiki link
 local function draw_zone_link(zone_name, color, is_palalumin)
     local wiki_name = zone_name
@@ -352,12 +373,15 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                             imgui.TextColored(COLORS.grey_text, "Return to " .. npc .. ".")
                         end)
                     elseif npc == "Fishstix" and daily.zone then
-                        draw_static_bar(function()
+                        draw_bar_with_overlay(0, "", COLORS.dark_grey, function(bx, by, bx2, by2)
                             imgui.TextColored(COLORS.white, "Secret chest at ")
                             imgui.SameLine()
                             draw_zone_link(daily.zone, COLORS.link)
-                            imgui.SameLine()
-                            imgui.TextColored(COLORS.white, " ")
+                            local right_text = daily.hint or "/huh"
+                            local right_w = imgui.CalcTextSize(right_text)
+                            local right_y = by + ((by2 - by) - imgui.GetTextLineHeight()) * 0.5
+                            imgui.SetCursorScreenPos({ bx2 - right_w - 4, right_y })
+                            draw_command_link(right_text, COLORS.link, "/huh motion", "Send /huh motion")
                         end)
                     elseif npc == "Murdox" and daily.count and daily.target and daily.zone then
                         local total = tonumber(daily.count) or 0
