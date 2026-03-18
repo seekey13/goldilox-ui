@@ -247,7 +247,9 @@ local function get_plain_status(npc, handler, daily)
     elseif daily.status == 'return' then
         return "Return to " .. npc .. ".", COLORS.cyan
     elseif handler.status ~= nil then
-        return strip_colors(handler.status(daily)), COLORS.white
+        local s = handler.status(daily)
+        if s then return strip_colors(s), COLORS.white end
+        return nil
     else
         return daily.message, COLORS.white
     end
@@ -397,9 +399,11 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                     else
                         -- Fallback for unrecognized state
                         local text, color = get_plain_status(npc, handler, daily)
-                        draw_static_bar(function()
-                            imgui.TextColored(color, text)
-                        end)
+                        if text then
+                            draw_static_bar(function()
+                                imgui.TextColored(color, text)
+                            end)
+                        end
                     end
                 end
             end
@@ -516,9 +520,12 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                             draw_link("#sea", COLORS.link, "https://discord.com/channels/696847769444548700/1359317001457242192", "Open CatsEyeXI Discord Channel #sea")
                         end, false)
                     else
-                        draw_static_bar(function()
-                            imgui.TextColored(COLORS.white, strip_colors(handler.status(daily)))
-                        end, false)
+                        local s = handler.status(daily)
+                        if s then
+                            draw_static_bar(function()
+                                imgui.TextColored(COLORS.white, strip_colors(s))
+                            end, false)
+                        end
                     end
                     -- Blank lines after each quest group
                     imgui.Spacing()

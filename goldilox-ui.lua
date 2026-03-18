@@ -82,22 +82,28 @@ local handlers = {
     --]]
     Fishstix = {
         talk = function(data, prev)
-            data.zone = string.match(data.message, "Go to (.-),")
+            local zone = string.match(data.message, "Go to (.-),")
+            if zone then data.zone = zone end
         end,
         status = function(data)
+            if not data.zone then return nil end
             return "Secret chest at " .. data.zone
         end,
     },
     Murdox = {
         talk = function(data, prev)
-            data.count = string.match(data.message, "kill (%d+)")
-            data.target = string.match(data.message, "%d+ (.+)!")
-            data.zone = string.match(data.message, "Go to (.+) and")
+            local count = string.match(data.message, "kill (%d+)")
+            local target = string.match(data.message, "%d+ (.+)!")
+            local zone = string.match(data.message, "Go to (.+) and")
+            if count then data.count = count end
+            if target then data.target = target end
+            if zone then data.zone = zone end
             if prev and prev.remaining then
                 data.remaining = prev.remaining
             end
         end,
         status = function(data)
+            if not data.count or not data.target or not data.zone then return nil end
             local r = data.remaining or data.count
             return (
                 "Kill " .. r .. " more " .. data.target .. " at " .. data.zone
@@ -107,27 +113,35 @@ local handlers = {
     },
     Mistrix = {
         talk = function(data, prev)
-            data.item = string.match(data.message, "Craft me up %a+ signed (.+) and trade it to me!")
+            local item = string.match(data.message, "Craft me up %a+ signed (.+) and trade it to me!")
+            if item then data.item = item end
         end,
         status = function(data)
+            if not data.item then return nil end
             return "Trade a signed " .. data.item
         end,
     },
     Saltlix = {
         talk = function(data, prev)
-            data.target = string.match(data.message, "kill (.+)!")
-            data.zone = string.match(data.message, "Go to (.+) and")
+            local target = string.match(data.message, "kill (.+)!")
+            local zone = string.match(data.message, "Go to (.+) and")
+            if target then data.target = target end
+            if zone then data.zone = zone end
         end,
         status = function(data)
+            if not data.target or not data.zone then return nil end
             return "Kill " .. data.target .. " at " .. data.zone
         end,
     },
     Beetrix = {
         talk = function(data, prev)
-            data.zone = string.match(data.message, "Go to (.-),")
-            data.item = string.match(data.message, "get %a+ (.+) and trade")
+            local zone = string.match(data.message, "Go to (.-),")
+            local item = string.match(data.message, "get %a+ (.+) and trade")
+            if zone then data.zone = zone end
+            if item then data.item = item end
         end,
         status = function(data)
+            if not data.item or not data.zone then return nil end
             return "Trade " .. data.item .. " found at " .. data.zone
         end,
     },
@@ -139,6 +153,7 @@ local palalumin_quests = {
             data.zone = data.message
         end,
         status = function(data)
+            if not data.zone then return nil end
             return "Find flux in " .. data.zone
         end,
     },
@@ -147,6 +162,7 @@ local palalumin_quests = {
             data.items = data.message
         end,
         status = function(data)
+            if not data.items then return nil end
             return "Trade " .. data.items
         end,
     },
@@ -160,6 +176,7 @@ local palalumin_quests = {
             data.total = tonumber(data.total)
         end,
         status = function(data)
+            if not data.total or not data.killed or not data.target or not data.zone then return nil end
             return (
                 "Kill " .. (data.total - data.killed) .. " more " .. data.target .. " at " .. data.zone
                 .. " " .. chat.color1(6, "(" .. data.total .. " total)")
@@ -221,11 +238,18 @@ local function handle_daily_quest_updates(e)  -- Sent under mode 121
     end
 
     -- Handle Murdox kill count updates
-    local kills = string.match(e.message, "(%d+) .+ remaining")
+    -- "Daily Quest: 16 kills remain. (Marid in Wajaom Woodlands)"
+    local kills, mob, zone = string.match(e.message, "(%d+) kills remain%..-%((.+) in (.+)%)")
     if kills then
         update_status()
         if status.dailies.Murdox then
             status.dailies.Murdox.remaining = kills
+            if mob and not status.dailies.Murdox.target then
+                status.dailies.Murdox.target = mob
+            end
+            if zone and not status.dailies.Murdox.zone then
+                status.dailies.Murdox.zone = zone
+            end
             settings.save()
         end
         return
