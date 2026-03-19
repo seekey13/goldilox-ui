@@ -4,7 +4,7 @@ Goldilox is an Ashita4 addon exclusively for the [CatsEye XI](https://www.catsey
 consisting of goblin dailies, including the goblin by the same name.
 
 ## UI
-<img width="572" height="449" alt="image" src="https://github.com/user-attachments/assets/684b67c0-450c-4bd3-9847-dd3691e91d68" />
+<img width="607" height="435" alt="image" src="https://github.com/user-attachments/assets/04e87104-d0e0-4364-8fe6-aebdbdd65cd2" />
 
 Still very much a work in progress but this is the idea.
 
