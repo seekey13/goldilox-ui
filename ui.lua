@@ -374,13 +374,22 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                         end)
                     elseif npc == "Fishstix" and daily.zone then
                         draw_bar_with_overlay(0, "", COLORS.dark_grey, function(bx, by, bx2, by2)
+                            local right_text = daily.hint or "/huh motion"
+                            local right_w = imgui.CalcTextSize(right_text)
+                            local pad = 4
+                            local clip_right = bx2 - right_w - pad * 2
+
+                            -- Draw left content clipped so it can't overlap the right link
+                            local draw_list = imgui.GetWindowDrawList()
+                            draw_list:PushClipRect({ bx, by }, { clip_right, by2 }, true)
                             imgui.TextColored(COLORS.white, "Secret chest at ")
                             imgui.SameLine()
                             draw_zone_link(daily.zone, COLORS.link)
-                            local right_text = daily.hint or "/huh"
-                            local right_w = imgui.CalcTextSize(right_text)
+                            draw_list:PopClipRect()
+
+                            -- Right-justified /huh link
                             local right_y = by + ((by2 - by) - imgui.GetTextLineHeight()) * 0.5
-                            imgui.SetCursorScreenPos({ bx2 - right_w - 4, right_y })
+                            imgui.SetCursorScreenPos({ bx2 - right_w - pad, right_y })
                             draw_command_link(right_text, COLORS.link, "/huh motion", "Send /huh motion")
                         end)
                     elseif npc == "Murdox" and daily.count and daily.target and daily.zone then
