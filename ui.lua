@@ -385,6 +385,8 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                             imgui.TextColored(COLORS.white, "Secret chest at ")
                             imgui.SameLine()
                             draw_zone_link(daily.zone, COLORS.link)
+                            imgui.SameLine()
+                            imgui.TextColored(COLORS.white, "            ")  -- reserve space for /huh motion
                             draw_list:PopClipRect()
 
                             -- Right-justified /huh link
@@ -547,6 +549,8 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                             imgui.TextColored(COLORS.white, "Find the Flux in ")
                             imgui.SameLine()
                             draw_zone_link(daily.zone, COLORS.link, true)
+                            imgui.SameLine()
+                            imgui.TextColored(COLORS.white, "    ")  -- reserve space for #sea
                             local discord_w = imgui.CalcTextSize("#sea")
                             local discord_y = by + ((by2 - by) - imgui.GetTextLineHeight()) * 0.5
                             imgui.SetCursorScreenPos({ bx2 - discord_w - 4, discord_y })
