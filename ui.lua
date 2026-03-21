@@ -471,7 +471,7 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                     end
                     -- For "Item request", show summary line with linked items, then progress bars
                     if quest == "Item request" and daily.items then
-                        -- Collect parsed items for summary line and bars
+                        -- Collect parsed items
                         local items = {}
                         for entry in daily.items:gmatch("([^,]+)") do
                             entry = entry:match("^%s*(.-)%s*$")
@@ -480,55 +480,38 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                             table.insert(items, { name = item_name, needed = needed, have = have })
                         end
 
-                        -- Check if all items are satisfied for summary line coloring
-                        local all_satisfied = true
+                        -- Compute totals (cap each item's have at its needed count)
+                        local total_have = 0
+                        local total_needed = 0
+                        local any_unknown = false
                         for _, item in ipairs(items) do
-                            if not item.have or item.have < item.needed then
-                                all_satisfied = false
-                                break
+                            total_needed = total_needed + item.needed
+                            if item.have == nil then
+                                any_unknown = true
+                            else
+                                total_have = total_have + math.min(item.have, item.needed)
                             end
                         end
+
+                        local all_satisfied = (not any_unknown) and (total_have >= total_needed)
+                        local fraction = (total_needed > 0) and (total_have / total_needed) or 0
+                        local bar_color = all_satisfied and COLORS.grey_bar or (any_unknown and COLORS.dark_grey or nil)
                         local summary_label, summary_highlight = progress_colors(all_satisfied)
 
-                        -- Summary line inside a progress bar container
-                        draw_bar_with_overlay(all_satisfied and 1.0 or 0, "", all_satisfied and COLORS.grey_bar or COLORS.dark_grey, function()
+                        draw_bar_with_overlay(fraction, "", bar_color, function()
                             imgui.TextColored(summary_label, "Trade ")
                             for i, item in ipairs(items) do
                                 imgui.SameLine()
                                 draw_item_link(item.name, summary_highlight)
                                 imgui.SameLine()
-                                local suffix = " x" .. item.needed
+                                local have_str = item.have and tostring(item.have) or "?"
+                                local suffix = " " .. have_str .. "/" .. item.needed
                                 if i < #items then suffix = suffix .. "," end
                                 imgui.TextColored(summary_label, suffix)
-                                imgui.SameLine()
-                                imgui.TextColored(summary_label, " ")
                             end
+                            imgui.SameLine()
+                            imgui.TextColored(summary_label, " ")
                         end, false)
-
-                        -- Progress bars with white (non-linked) item text
-                        for _, item in ipairs(items) do
-                            local fraction, count_text, bar_color, label_color
-                            if item.have == nil then
-                                fraction = 0
-                                count_text = string.format("?/%d", item.needed)
-                                bar_color = COLORS.dark_grey
-                                label_color = COLORS.white
-                            elseif item.have >= item.needed then
-                                fraction = 1.0
-                                count_text = string.format("%d/%d", item.have, item.needed)
-                                bar_color = COLORS.grey_bar
-                                label_color = COLORS.grey_text
-                            else
-                                fraction = item.have / item.needed
-                                count_text = string.format("%d/%d", item.have, item.needed)
-                                bar_color = nil  -- default
-                                label_color = COLORS.white
-                            end
-
-                            draw_bar_with_overlay(fraction, count_text, bar_color, function()
-                                imgui.TextColored(label_color, item.name)
-                            end, false)
-                        end
                     elseif quest == "Defeat mobs" and (daily.killed and daily.total or daily.completed) then
                         -- Kill quest progress bar
                         local killed = daily.killed or 0
