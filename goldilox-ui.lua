@@ -10,6 +10,7 @@ local settings = require('settings')
 local goldilox_ui = require('ui')
 
 local current_character_id = nil  -- Detect character changes
+local recent_trade = false        -- Set true when an outgoing trade packet is detected
 
 local default_status = T{
     offset = (60 * 60 * 9),    -- JST is 9 hours ahead of UTC.  Used for calculating time until Japanese midnight.
@@ -287,7 +288,8 @@ local function handle_daily_quest_updates(e)  -- Sent under mode 121
         ◇ Quest Completed  (after trading items or interacting with flux)
         Determine which quest by checking the player's current target:
           Lumorian Flux  -> Find flux
-          Palalumin      -> Item request
+          Palalumin      -> Item request  (only if a trade packet was sent)
+                            Defeat mobs   (only if kill count is satisfied)
     ]]
     if string.match(e.message, "Quest Completed") then
         update_status()
@@ -299,15 +301,22 @@ local function handle_daily_quest_updates(e)  -- Sent under mode 121
                     settings.save()
                 end
             elseif target_name == "Palalumin" then
-                if status.palalumin_quests["Item request"] then
-                    status.palalumin_quests["Item request"].completed = true
-                    settings.save()
-                end
+                -- Mark "Defeat mobs" complete only if kill count is satisfied
                 local defeat = status.palalumin_quests["Defeat mobs"]
                 if defeat and not defeat.completed and defeat.killed and defeat.total and defeat.killed >= defeat.total then
                     defeat.completed = true
                     settings.save()
                 end
+
+                -- Mark "Item request" complete ONLY if a trade actually took place
+                if recent_trade then
+                    local item_req = status.palalumin_quests["Item request"]
+                    if item_req and not item_req.completed then
+                        item_req.completed = true
+                        settings.save()
+                    end
+                end
+                recent_trade = false
             end
         end
         return
@@ -467,6 +476,13 @@ ashita.events.register('d3d_present', 'goldilox_ui_cb', function()
         update_status()
     end
     goldilox_ui.render(status, goblin_order, handlers, palalumin_quest_order, palalumin_quests)
+end)
+
+-- Detect outgoing trade packets (0x0036) to distinguish item turn-ins from talk-based completions
+ashita.events.register('packet_out', 'goldilox_packet_out_cb', function(e)
+    if e.id == 0x0036 then
+        recent_trade = true
+    end
 end)
 
 -- Track Shift key state for window dragging
