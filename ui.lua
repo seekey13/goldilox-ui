@@ -420,16 +420,22 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                             draw_kill_at(daily.target, daily.zone, COLORS.white, COLORS.link)
                         end)
                     elseif npc == "Beetrix" and daily.item and daily.zone then
-                        draw_static_bar(function()
-                            imgui.TextColored(COLORS.white, "Trade ")
+                        local have = get_item_count(daily.item)
+                        local has_item = have and have >= 1
+                        local fraction = has_item and 1.0 or 0
+                        local bar_color = has_item and COLORS.grey_bar or COLORS.dark_grey
+                        local label_color, highlight_color = progress_colors(has_item)
+                        local count_text = have and (tostring(math.min(have, 1)) .. "/1") or "?/1"
+                        draw_bar_with_overlay(fraction, count_text, bar_color, function()
+                            imgui.TextColored(label_color, "Trade ")
                             imgui.SameLine()
-                            draw_item_link(daily.item, COLORS.link)
+                            draw_item_link(daily.item, highlight_color)
                             imgui.SameLine()
-                            imgui.TextColored(COLORS.white, " found at ")
+                            imgui.TextColored(label_color, " found at ")
                             imgui.SameLine()
-                            draw_zone_link(daily.zone, COLORS.link)
+                            draw_zone_link(daily.zone, highlight_color)
                             imgui.SameLine()
-                            imgui.TextColored(COLORS.white, " ")
+                            imgui.TextColored(label_color, "    ")  -- reserve space for count
                         end)
                     else
                         -- Fallback for unrecognized state
