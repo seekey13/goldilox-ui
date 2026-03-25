@@ -109,10 +109,10 @@ local function singularize_mob(name)
     return name
 end
 
--- Draw colored, underlined text that opens a URL on click
-local function draw_link(text, color, url, tooltip)
+-- Shared helper: render underlined, interactive colored text.
+-- tooltip_text is shown on hover; on_click_fn is called on left click.
+local function draw_interactive_text(text, color, tooltip_text, on_click_fn)
     imgui.TextColored(color, text)
-    -- Underline beneath the text
     local min_x, min_y = imgui.GetItemRectMin()
     local max_x, max_y = imgui.GetItemRectMax()
     local draw_list = imgui.GetWindowDrawList()
@@ -123,32 +123,25 @@ local function draw_link(text, color, url, tooltip)
     local col_u32 = bit.bor(bit.lshift(a, 24), bit.lshift(b, 16), bit.lshift(g, 8), r)
     draw_list:AddLine({ min_x, max_y }, { max_x, max_y }, col_u32, 1.0)
     if imgui.IsItemHovered() then
-        imgui.SetTooltip(tooltip or ("Open FFXI Wiki: " .. text))
+        imgui.SetTooltip(tooltip_text)
     end
     if imgui.IsItemClicked(0) then
-        os.execute('start "" "' .. url .. '"')
+        on_click_fn()
     end
+end
+
+-- Draw colored, underlined text that opens a URL on click
+local function draw_link(text, color, url, tooltip)
+    draw_interactive_text(text, color, tooltip or ("Open FFXI Wiki: " .. text), function()
+        os.execute('start "" "' .. url .. '"')
+    end)
 end
 
 -- Draw colored, underlined text that sends a game command on click
 local function draw_command_link(text, color, command, tooltip)
-    imgui.TextColored(color, text)
-    -- Underline beneath the text
-    local min_x, min_y = imgui.GetItemRectMin()
-    local max_x, max_y = imgui.GetItemRectMax()
-    local draw_list = imgui.GetWindowDrawList()
-    local a = math.floor((color[4] or 1.0) * 255)
-    local b = math.floor((color[3] or 0) * 255)
-    local g = math.floor((color[2] or 0) * 255)
-    local r = math.floor((color[1] or 0) * 255)
-    local col_u32 = bit.bor(bit.lshift(a, 24), bit.lshift(b, 16), bit.lshift(g, 8), r)
-    draw_list:AddLine({ min_x, max_y }, { max_x, max_y }, col_u32, 1.0)
-    if imgui.IsItemHovered() then
-        imgui.SetTooltip(tooltip or command)
-    end
-    if imgui.IsItemClicked(0) then
+    draw_interactive_text(text, color, tooltip or command, function()
         AshitaCore:GetChatManager():QueueCommand(1, command)
-    end
+    end)
 end
 
 -- Draw a zone name as a clickable bg-wiki link

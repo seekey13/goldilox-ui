@@ -1,4 +1,4 @@
-addon.name      = 'Goldilox-ui'
+addon.name      = 'Goldilox-UI'
 addon.author    = 'Dewin & Seekey'
 addon.version   = '1.2'
 addon.desc      = 'Keeps track of Goblin dailies.  Exclusively for CatsEye XI.'
@@ -63,7 +63,7 @@ local function update_status()
     end
 
     local now = os.time()
-    local deadline = math.floor((now + default_status.offset) / 86400) * 86400 + 86400 - default_status.offset
+    local deadline = math.floor((now + status.offset) / 86400) * 86400 + 86400 - status.offset
 
     if status.version ~= default_status.version then
         status = settings.load(default_status)
@@ -316,9 +316,9 @@ local function handle_daily_quest_updates(e)  -- Sent under mode 121
                         settings.save()
                     end
                 end
-                recent_trade = false
             end
         end
+        recent_trade = false
         return
     end
 
@@ -431,7 +431,8 @@ ashita.events.register('command', 'command_cb', function(e)
         elseif daily.status == 'return' then
             print(preamble .. chat.color1(2, "Return to " .. npc .. "."))
         elseif handler.status ~= nil then
-            print(preamble .. daily.message)
+            local s = handler.status(daily)
+            if s then print(preamble .. strip_colors(s)) end
         end
     end
     if completed > 0 then
