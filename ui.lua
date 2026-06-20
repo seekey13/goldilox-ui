@@ -52,20 +52,10 @@ local function draw_progress_bar(fraction, count_text, bar_color)
     return min_x, min_y, max_x, max_y
 end
 
--- Position the imgui cursor inside a bar rect for overlaying linked widgets
-local function begin_bar_overlay(min_x, min_y, max_y)
-    local pad = 4
-    local text_y = min_y + ((max_y - min_y) - imgui.GetTextLineHeight()) * 0.5
-    imgui.SetCursorScreenPos({ min_x + pad, text_y })
-end
-
--- Draw a progress bar with content overlaid on top.
--- content_fn receives (min_x, min_y, max_x, max_y) bar rect for advanced positioning.
--- Pass add_spacing = false to suppress the default post-bar spacing.
 local function draw_bar_with_overlay(fraction, count_text, bar_color, content_fn, add_spacing)
     local bx, by, bx2, by2 = draw_progress_bar(fraction, count_text, bar_color)
     local after_x, after_y = imgui.GetCursorScreenPos()
-    begin_bar_overlay(bx, by, by2)
+    imgui.SetCursorScreenPos({ bx + 4, by + ((by2 - by) - imgui.GetTextLineHeight()) * 0.5 })
     if content_fn then
         content_fn(bx, by, bx2, by2)
     end
@@ -87,18 +77,13 @@ local PALALUMIN_ZONE_FIXUPS = {
     ["RuHmet"]  = "Ru'Hmet",
 }
 
--- Convert a display name to a bg-wiki URL-safe path segment
--- Preserves original casing from game data (e.g. "The Garden of Ru'Hmet")
-local function to_wiki_path(name)
+local function to_wiki_path(name, titled)
+    if titled then
+        name = name:gsub("(%a)([%w]*)", function(first, rest)
+            return first:upper() .. rest:lower()
+        end)
+    end
     return name:gsub(" ", "_"):gsub("'", "%%27")
-end
-
--- Title-case variant for items / mobs whose game data may be lowercase
-local function to_wiki_path_titled(name)
-    local titled = name:gsub("(%a)([%w]*)", function(first, rest)
-        return first:upper() .. rest:lower()
-    end)
-    return titled:gsub(" ", "_"):gsub("'", "%%27")
 end
 
 -- Singularize a mob name for wiki Category links (strip trailing 's')
@@ -159,20 +144,13 @@ end
 -- Draw a mob name as a clickable bg-wiki Category link (for generic mob types)
 local function draw_mob_link(mob_name, color)
     local singular = singularize_mob(mob_name)
-    local url = "https://www.bg-wiki.com/ffxi/Category:" .. to_wiki_path_titled(singular)
+    local url = "https://www.bg-wiki.com/ffxi/Category:" .. to_wiki_path(singular, true)
     draw_link(mob_name, color, url)
 end
 
--- Draw an NM (notorious monster) name as a clickable bg-wiki link (no Category:, no singularization)
-local function draw_nm_link(nm_name, color)
-    local url = "https://www.bg-wiki.com/ffxi/" .. to_wiki_path_titled(nm_name)
-    draw_link(nm_name, color, url)
-end
-
--- Draw an item name as a clickable bg-wiki link
-local function draw_item_link(item_name, color)
-    local url = "https://www.bg-wiki.com/ffxi/" .. to_wiki_path_titled(item_name)
-    draw_link(item_name, color, url)
+local function draw_wiki_link(name, color)
+    local url = "https://www.bg-wiki.com/ffxi/" .. to_wiki_path(name, true)
+    draw_link(name, color, url)
 end
 
 -- Draw "Kill <target> at <zone>" with colored, linked highlights
@@ -185,7 +163,7 @@ local function draw_kill_at(target, zone, label_color, highlight_color, opts)
     if opts.mob_link then
         draw_mob_link(target, highlight_color)
     else
-        draw_nm_link(target, highlight_color)
+        draw_wiki_link(target, highlight_color)
     end
     imgui.SameLine()
     imgui.TextColored(label_color, " at ")
@@ -204,12 +182,12 @@ local function progress_colors(is_done)
     return COLORS.white, COLORS.link
 end
 
--- Strip Ashita chat color escape sequences from a string
 local function strip_colors(s)
     s = s:gsub("\x1E.-\x1E", ""):gsub("\x1F.-\x1F", "")
     s = s:gsub("\30.", ""):gsub("\31.", "")
     return s
 end
+ui.strip_colors = strip_colors
 
 -- Count how many of a given item the player has in their inventory
 -- Checks container: Inventory(0) only
@@ -252,22 +230,6 @@ local function parse_item_requirement(text)
     return text, 1
 end
 
--- Get plain-text quest status and color for imgui display
-local function get_plain_status(npc, handler, daily)
-    if daily == nil then
-        return "Not talked to today.", COLORS.orange
-    elseif daily.status == 'complete' then
-        return "Complete!", COLORS.green
-    elseif daily.status == 'return' then
-        return "Return to " .. npc .. ".", COLORS.cyan
-    elseif handler.status ~= nil then
-        local s = handler.status(daily)
-        if s then return strip_colors(s), COLORS.white end
-        return nil
-    else
-        return daily.message, COLORS.white
-    end
-end
 
 -- Toggle the UI window visibility
 function ui.toggle()
@@ -290,32 +252,21 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
         return
     end
 
-    -- Check if there's anything incomplete to display; hide UI if everything is done
     local has_incomplete = false
-
-    -- Check goblin dailies: any non-complete quest means something to show
+    local goblin_completed = 0
     for _, npc in ipairs(goblin_order) do
         local daily = status.dailies[npc]
-        if daily ~= nil and daily.status ~= 'complete' then
-            has_incomplete = true
-            break
-        end
-    end
-
-    -- Check Goldilox reward not collected
-    if not has_incomplete then
-        local goblin_completed = 0
-        for _, npc in ipairs(goblin_order) do
-            if status.dailies[npc] and status.dailies[npc].status == 'complete' then
+        if daily then
+            if daily.status == 'complete' then
                 goblin_completed = goblin_completed + 1
+            else
+                has_incomplete = true
             end
         end
-        if goblin_completed > 0 and status.goldilox_time ~= status.deadline then
-            has_incomplete = true
-        end
     end
-
-    -- Check palalumin quests: any non-completed quest means something to show
+    if not has_incomplete and goblin_completed > 0 and status.goldilox_time ~= status.deadline then
+        has_incomplete = true
+    end
     if not has_incomplete and status.palalumin_flagged then
         for _, quest in ipairs(palalumin_quest_order) do
             local daily = status.palalumin_quests[quest]
@@ -404,7 +355,7 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                         draw_static_bar(function()
                             imgui.TextColored(COLORS.white, "Trade a signed ")
                             imgui.SameLine()
-                            draw_item_link(daily.item, COLORS.link)
+                            draw_wiki_link(daily.item, COLORS.link)
                             imgui.SameLine()
                             imgui.TextColored(COLORS.white, " ")
                         end)
@@ -422,7 +373,7 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                         draw_bar_with_overlay(fraction, count_text, bar_color, function()
                             imgui.TextColored(label_color, "Trade ")
                             imgui.SameLine()
-                            draw_item_link(daily.item, highlight_color)
+                            draw_wiki_link(daily.item, highlight_color)
                             imgui.SameLine()
                             imgui.TextColored(label_color, " found at ")
                             imgui.SameLine()
@@ -431,11 +382,10 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                             imgui.TextColored(label_color, "    ")  -- reserve space for count
                         end)
                     else
-                        -- Fallback for unrecognized state
-                        local text, color = get_plain_status(npc, handler, daily)
-                        if text then
+                        local s = handler.status(daily)
+                        if s then
                             draw_static_bar(function()
-                                imgui.TextColored(color, text)
+                                imgui.TextColored(COLORS.white, strip_colors(s))
                             end)
                         end
                     end
@@ -501,7 +451,7 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                             imgui.TextColored(summary_label, "Trade ")
                             for i, item in ipairs(items) do
                                 imgui.SameLine()
-                                draw_item_link(item.name, summary_highlight)
+                                draw_wiki_link(item.name, summary_highlight)
                                 imgui.SameLine()
                                 local have_str = item.have and tostring(item.have) or "?"
                                 local suffix = " " .. have_str .. "/" .. item.needed

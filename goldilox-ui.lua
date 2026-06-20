@@ -22,19 +22,11 @@ local default_status = T{
 
 local status = nil
 
--- local ZONE_ALTAIEU = 33
 local ZONE_LOWERJEUNO = 245
 local ZONE_HUXZOI = 34
 
 local DIAMOND = "\129\158"
 local FULL_DIAMOND = "\129\159"
-
--- Strip Ashita chat color escape sequences from a string
-local function strip_colors(s)
-    s = s:gsub("\x1E.-\x1E", ""):gsub("\x1F.-\x1F", "")
-    s = s:gsub("\30.", ""):gsub("\31.", "")
-    return s
-end
 
 -- Get the name of the player's current target (extracted from targets.lua logic)
 local function get_current_target_name()
@@ -70,7 +62,6 @@ local function update_status()
         status.deadline = deadline
         settings.save()
     elseif status.deadline ~= deadline then
-        -- print(chat.header('Goldilox') .. 'Previous state was for a different day, resetting for today.')
         status.dailies = {}
         status.palalumin_quests = {}
         status.deadline = deadline
@@ -354,7 +345,6 @@ local function handle_palalumin_dialogue(e)
     end
     status.palalumin_quests[quest] = data
     palalumin_quests[quest].talk(data)
-    -- print(palalumin_quests[quest].status(data))
     settings.save()
 end
 
@@ -366,7 +356,7 @@ ashita.events.register('text_in', 'text_in_cb', function (e)
 
     -- Handle secret chest /huh direction hint (can arrive on any channel)
     -- "You sense a secret chest is far in the North direction!"
-    local clean_msg = strip_colors(e.message)
+    local clean_msg = goldilox_ui.strip_colors(e.message)
     local distance, direction = string.match(clean_msg, "You sense a secret chest is (.+) in the (.+) direction")
     if distance and direction then
         update_status()
@@ -432,7 +422,7 @@ ashita.events.register('command', 'command_cb', function(e)
             print(preamble .. chat.color1(2, "Return to " .. npc .. "."))
         elseif handler.status ~= nil then
             local s = handler.status(daily)
-            if s then print(preamble .. strip_colors(s)) end
+            if s then print(preamble .. goldilox_ui.strip_colors(s)) end
         end
     end
     if completed > 0 then
@@ -454,9 +444,6 @@ ashita.events.register('command', 'command_cb', function(e)
                     print(chat.header(addon.name) .. "Palalumin quests:")
                 end
                 print(chat.header(addon.name) .. DIAMOND .. " " .. handler.status(daily))
-                -- for k, v in pairs(data) do
-                --     print(k .. "=" .. v)
-                -- end
             end
         end
     end
