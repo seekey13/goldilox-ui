@@ -180,14 +180,6 @@ local function outline(dl, x, y, w, h, hex, radius, alpha)
     dl:AddRect({ x, y }, { x + w, y + h }, u32(hex, alpha), radius or 0)
 end
 
-local function content_width()
-    local a = imgui.GetContentRegionAvail()
-    if type(a) == 'table' then
-        return a.x or a[1] or 0
-    end
-    return a or 0
-end
-
 local anim, last_clock, frame_dt = {}, nil, 0
 local function tick()
     local now = os.clock()
@@ -236,12 +228,16 @@ end
 local folded = {}
 
 -- A section heading: chevron, bold-italic title, hairline. Click folds the rows.
+-- The hit box is only the title, so it does not stretch the window.
 -- Returns true while the section is open.
 local function draw_section_header(text)
-    local w = math.max(content_width(), S(200))
-    local h = S(36)
+    local h = S(20)
     local x, y = imgui.GetCursorScreenPos()
-    imgui.InvisibleButton('##fold.' .. text, { w, h })
+    local title_font = face('bold_italic')
+    local title_size = BODY + 1
+    local title_w = measure(text, title_font, title_size)
+    local btn_w = S(14) + title_w + S(6)
+    imgui.InvisibleButton('##fold.' .. text, { btn_w, h })
     local hovered = imgui.IsItemHovered()
     local clicked = imgui.IsItemClicked(0)
     if clicked then
@@ -250,15 +246,13 @@ local function draw_section_header(text)
     local open = folded[text] ~= true
     local t = ease('fold.' .. text, hovered and 1 or 0)
     local dl = imgui.GetWindowDrawList()
-    local cy = y + h / 2 + S(2)
-    glyph(dl, open and 'down' or 'right', x + S(8), cy, hovered and HEX.text or HEX.faint)
-    local title_font = face('bold_italic')
-    local title_size = BODY + 5
-    text_mid(dl, x + S(22), cy, text, mix(HEX.white, HEX.accent2, t * 0.35), title_font, title_size)
-    local title_w = measure(text, title_font, title_size)
-    local line_x = x + S(22) + title_w + S(8)
-    if x + w - S(4) > line_x then
-        dl:AddLine({ line_x, cy }, { x + w - S(4), cy }, u32(HEX.line), 1)
+    local cy = y + h / 2
+    glyph(dl, open and 'down' or 'right', x + S(5), cy, hovered and HEX.text or HEX.faint)
+    text_mid(dl, x + S(14), cy, text, mix(HEX.white, HEX.accent2, t * 0.35), title_font, title_size)
+    local line_x = x + S(14) + title_w + S(6)
+    local line_end = x + math.max(btn_w, ui.fit_w or 0)
+    if line_end > line_x + S(8) then
+        dl:AddLine({ line_x, cy }, { line_end, cy }, u32(HEX.line), 1)
     end
     return open
 end
@@ -290,64 +284,114 @@ local function show_tooltip(text)
     imgui.PopStyleColor(3)
 end
 
--- A sunken row. fraction nil draws no meter (a location or a line of text).
+local function piece_w(s)
+    local w = imgui.CalcTextSize(tostring(s or ''))
+    if type(w) == 'table' then
+        return w.x or w[1] or 0
+    end
+    return w or 0
+end
+
+local function mark_width(w)
+    if w > (ui._fit_now or 0) then
+        ui._fit_now = w
+    end
+end
+
+-- The next widget, `item_w` wide, stays on this line. It sits `min_gap` after the
+-- last item, or at the right edge once the panel is wider than this line.
+-- The width remembered for fitting is the unstretched line, so a short row can shrink.
+local function place_after(min_gap, item_w)
+    local left_end = select(1, imgui.GetItemRectMax())
+    local row_x = ui._row_x or left_end
+    local natural = (left_end - row_x) + min_gap + item_w
+    ui._natural = math.max(ui._natural or 0, natural)
+    local target = math.max(ui.fit_w or 0, natural)
+    local gap = math.max(min_gap, target - (left_end - row_x) - item_w)
+    imgui.SameLine(0, gap)
+end
+
+-- A row as wide as its text. fraction nil draws no meter.
 -- bar_color COLORS.grey_bar is done (teal); COLORS.dark_grey is not yet known.
-local function draw_progress_bar(fraction, count_text, bar_color)
+-- content_fn receives (x, y, x, y); right-side pieces use place_after.
+local function draw_bar_with_overlay(fraction, count_text, bar_color, content_fn, add_spacing)
     local has_meter = fraction ~= nil
-    local h = S(has_meter and 44 or 34)
-    local x, y = imgui.GetCursorScreenPos()
-    imgui.Dummy({ -1, h })
-    local max_x, max_y = imgui.GetItemRectMax()
-    local row_w = math.max(1, max_x - x)
+    local pad_y = S(1)
     local dl = imgui.GetWindowDrawList()
-    local radius = S(5)
-    fill(dl, x, y, row_w, h, HEX.well, radius, 1)
-    outline(dl, x, y, row_w, h, HEX.line, radius, 1)
-    if has_meter then
-        local mx = x + S(8)
-        local mw = row_w - S(16)
-        local mh = math.max(2, S(4))
-        local my = max_y - S(8) - mh / 2
-        fill(dl, mx, my, mw, mh, HEX.off, mh / 2, 1)
-        local frac = math.max(0, math.min(1, fraction or 0))
-        if frac > 0 and mw > 0 then
-            local meter = HEX.accent
-            if bar_color == COLORS.grey_bar then
-                meter = HEX.teal
-            elseif bar_color == COLORS.dark_grey then
-                meter = HEX.accent_lo
-            end
-            fill(dl, mx, my, math.max(mh, mw * frac), mh, meter, mh / 2, 1)
-        end
+    local split = false
+    local ok_method, method = pcall(function() return dl.ChannelsSplit end)
+    if ok_method and type(method) == 'function' then
+        split = pcall(function()
+            dl:ChannelsSplit(2)
+            dl:ChannelsSetCurrent(1)
+        end)
+    end
+
+    imgui.BeginGroup()
+    if pad_y > 0 then
+        imgui.Dummy({ 0, pad_y })
+    end
+    local cx, cy = imgui.GetCursorScreenPos()
+    ui._row_x = cx
+    ui._natural = nil
+    if content_fn then
+        content_fn(cx, cy, cx, cy)
     end
     if count_text and count_text ~= '' then
-        local count_hex = (bar_color == COLORS.grey_bar) and HEX.dim or HEX.text2
-        local band_bottom = has_meter and (max_y - S(12)) or max_y
-        local cy = y + (band_bottom - y) / 2
-        text_right(dl, x + row_w - S(8), cy, count_text, count_hex, face('text'), SMALL)
+        place_after(S(8), piece_w(count_text))
+        local hex = (bar_color == COLORS.grey_bar) and HEX.dim or HEX.text2
+        imgui.TextColored(rgba(hex), count_text)
     end
-    return x, y, x + row_w, y + h, has_meter
-end
-
-local function begin_bar_overlay(min_x, min_y, max_y, has_meter)
-    local bottom = has_meter and (max_y - S(12)) or max_y
-    local text_y = min_y + ((bottom - min_y) - imgui.GetTextLineHeight()) * 0.5
-    imgui.SetCursorScreenPos({ min_x + S(8), text_y })
-end
-
--- Draw a row with content overlaid on top.
--- content_fn receives (min_x, min_y, max_x, max_y).
--- Pass add_spacing = false to keep only the window's item spacing after the row.
-local function draw_bar_with_overlay(fraction, count_text, bar_color, content_fn, add_spacing)
-    local bx, by, bx2, by2, has_meter = draw_progress_bar(fraction, count_text, bar_color)
-    local after_x, after_y = imgui.GetCursorScreenPos()
-    begin_bar_overlay(bx, by, by2, has_meter)
-    if content_fn then
-        content_fn(bx, by, bx2, by2)
+    if has_meter then
+        imgui.Dummy({ 0, S(4) })
     end
-    imgui.SetCursorScreenPos({ after_x, after_y })
+    if pad_y > 0 then
+        imgui.Dummy({ 0, pad_y })
+    end
+    imgui.EndGroup()
+
+    local x1, y1 = imgui.GetItemRectMin()
+    local x2, y2 = imgui.GetItemRectMax()
+    local row_w = math.max(1, x2 - x1)
+    local row_h = math.max(1, y2 - y1)
+    mark_width(ui._natural or row_w)
+
+    local function paint_back()
+        local radius = S(3)
+        fill(dl, x1, y1, row_w, row_h, HEX.well, radius, 1)
+        outline(dl, x1, y1, row_w, row_h, HEX.line, radius, 1)
+        if not has_meter or row_w <= S(8) then
+            return
+        end
+        local mh = math.max(2, S(3))
+        local mx = x1 + S(4)
+        local mw = row_w - S(8)
+        local my = y2 - S(2) - mh
+        fill(dl, mx, my, mw, mh, HEX.off, mh / 2, 1)
+        local frac = math.max(0, math.min(1, fraction or 0))
+        if frac <= 0 then
+            return
+        end
+        local meter = HEX.accent
+        if bar_color == COLORS.grey_bar then
+            meter = HEX.teal
+        elseif bar_color == COLORS.dark_grey then
+            meter = HEX.accent_lo
+        end
+        fill(dl, mx, my, math.max(mh, mw * frac), mh, meter, mh / 2, 1)
+    end
+
+    if split then
+        pcall(function() dl:ChannelsSetCurrent(0) end)
+        paint_back()
+        pcall(function() dl:ChannelsMerge() end)
+    elseif has_meter then
+        local mh = math.max(2, S(3))
+        local my = y2 - S(2) - mh
+        fill(dl, x1, my, row_w, mh, HEX.off, mh / 2, 1)
+    end
     if add_spacing ~= false then
-        imgui.Dummy({ 0, S(2) })
+        imgui.Dummy({ 0, S(1) })
     end
 end
 
@@ -358,16 +402,17 @@ end
 
 -- Amber or teal callout: a wash, a stripe down the left, the line in that colour.
 local function draw_notice(text, hex)
-    local h = S(30)
+    local h = S(18)
+    local tw = measure(text, face('text'), SMALL + 1)
+    local w = tw + S(10)
     local x, y = imgui.GetCursorScreenPos()
-    imgui.Dummy({ -1, h })
-    local row_w = math.max(1, select(1, imgui.GetItemRectMax()) - x)
+    imgui.Dummy({ w, h })
+    mark_width(w)
     local dl = imgui.GetWindowDrawList()
-    local top, height = y + S(3), h - S(6)
-    fill(dl, x, top, row_w, height, hex, S(3), 0.12)
+    fill(dl, x, y, w, h, hex, S(3), 0.12)
     local left = ImDrawFlags_RoundCornersLeft or ImDrawCornerFlags_Left
-    fill(dl, x, top, S(3), height, hex, S(2), 1, left)
-    text_mid(dl, x + S(12), y + h / 2, text, hex, face('text'), BODY - 1)
+    fill(dl, x, y, S(2), h, hex, S(2), 1, left)
+    text_mid(dl, x + S(6), y + h / 2, text, hex, face('text'), SMALL + 1)
 end
 
 local STYLE_COLORS = nil
@@ -391,13 +436,13 @@ local function push_window_style()
     for _, entry in ipairs(STYLE_COLORS) do
         imgui.PushStyleColor(entry[1], entry[2])
     end
-    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, { S(16), S(12) })
+    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, { S(8), S(4) })
     imgui.PushStyleVar(ImGuiStyleVar_WindowRounding, S(5))
     imgui.PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1)
-    imgui.PushStyleVar(ImGuiStyleVar_FrameRounding, S(4))
+    imgui.PushStyleVar(ImGuiStyleVar_FrameRounding, S(3))
     imgui.PushStyleVar(ImGuiStyleVar_PopupRounding, S(5))
     imgui.PushStyleVar(ImGuiStyleVar_PopupBorderSize, 1)
-    imgui.PushStyleVar(ImGuiStyleVar_ItemSpacing, { S(6), S(6) })
+    imgui.PushStyleVar(ImGuiStyleVar_ItemSpacing, { S(4), S(2) })
     imgui.PushStyleVar(ImGuiStyleVar_ScrollbarSize, S(6))
     imgui.PushStyleVar(ImGuiStyleVar_ScrollbarRounding, S(3))
 end
@@ -408,30 +453,32 @@ local function pop_window_style()
 end
 
 local function draw_title()
-    local h = S(36)
+    local h = S(18)
     local x, y = imgui.GetCursorScreenPos()
-    imgui.Dummy({ -1, h })
-    local max_x = select(1, imgui.GetItemRectMax())
+    imgui.Dummy({ 0, h })
     local dl = imgui.GetWindowDrawList()
     local cy = y + h / 2
     local title_font = face('semi')
-    text_mid(dl, x, cy, 'Goldilox', HEX.white, title_font, BODY + 3)
-    local title_w = measure('Goldilox', title_font, BODY + 3)
-    text_mid(dl, x + title_w + S(10), cy, 'Daily quests', HEX.faint, face('text'), SMALL)
-    -- The hit box stays inside the row so it does not stretch the window.
-    local cx = max_x - S(14)
+    local title_size = BODY
+    text_mid(dl, x, cy, 'Goldilox', HEX.white, title_font, title_size)
+    local title_w = measure('Goldilox', title_font, title_size)
+    text_mid(dl, x + title_w + S(6), cy, 'Daily quests', HEX.faint, face('text'), SMALL)
+    local note_w = measure('Daily quests', face('text'), SMALL)
+    local title_end = title_w + S(6) + note_w
+    mark_width(title_end + S(16))
+    -- Last frame's content width puts the × at the corner without forcing a wide panel.
+    local cx = x + math.max(title_end + S(10), (ui.fit_w or 0) - S(4))
     local restore_x, restore_y = imgui.GetCursorScreenPos()
-    imgui.SetCursorScreenPos({ cx - S(10), cy - S(10) })
-    imgui.InvisibleButton('##goldilox.close', { S(20), S(20) })
+    imgui.SetCursorScreenPos({ cx - S(7), cy - S(7) })
+    imgui.InvisibleButton('##goldilox.close', { S(14), S(14) })
     local close_hover = imgui.IsItemHovered()
     if imgui.IsItemClicked(0) then
         ui.show[1] = false
     end
     imgui.SetCursorScreenPos({ restore_x, restore_y })
     glyph(dl, 'close', cx, cy, close_hover and HEX.rose or HEX.dim)
-    local wx = imgui.GetWindowPos()
-    local ww = imgui.GetWindowSize()
-    dl:AddLine({ wx + S(12), y + h }, { wx + ww - S(12), y + h }, u32(HEX.border), 1)
+    local line_end = x + math.max(title_end, ui.fit_w or 0)
+    dl:AddLine({ x, y + h }, { line_end, y + h }, u32(HEX.border), 1)
 end
 
 local function draw_shadow()
@@ -560,8 +607,6 @@ local function draw_kill_at(target, zone, label_color, highlight_color, opts)
     imgui.TextColored(label_color, " at ")
     imgui.SameLine()
     draw_zone_link(zone, highlight_color, opts.palalumin)
-    imgui.SameLine()
-    imgui.TextColored(COLORS.white, "     ")
 end
 
 -- Pick label / highlight colors based on completion state
@@ -739,7 +784,8 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
     tick()
     fonts_begin()
 
-    imgui.SetNextWindowSizeConstraints({ S(460), 0 }, { FLT_MAX, FLT_MAX })
+    -- No minimum width: the panel hugs the widest line. A previous constraint would keep it wide.
+    imgui.SetNextWindowSizeConstraints({ 0, 0 }, { FLT_MAX, FLT_MAX })
     -- Hold Shift to drag the window; otherwise it stays locked in place
     local shift_held = ui.shift_held
     local win_flags = bit.bor(
@@ -761,6 +807,7 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
         font_pushed = true
     end
     if imgui.Begin('Goldilox - Daily Quests', ui.show, win_flags) then
+        ui._fit_now = 0
         draw_title()
 
         -- Goblin dailies
@@ -791,25 +838,12 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                             imgui.TextColored(COLORS.grey_text, "Return to " .. npc .. ".")
                         end)
                     elseif npc == "Fishstix" and daily.zone then
-                        draw_bar_with_overlay(nil, "", nil, function(bx, by, bx2, by2)
-                            local right_text = daily.hint or "/huh motion"
-                            local right_w = imgui.CalcTextSize(right_text)
-                            local pad = S(8)
-                            local clip_right = bx2 - right_w - pad * 2
-
-                            -- Draw left content clipped so it can't overlap the right link
-                            local draw_list = imgui.GetWindowDrawList()
-                            draw_list:PushClipRect({ bx, by }, { clip_right, by2 }, true)
+                        local right_text = daily.hint or "/huh motion"
+                        draw_bar_with_overlay(nil, "", nil, function()
                             imgui.TextColored(COLORS.white, "Secret chest at ")
                             imgui.SameLine()
                             draw_zone_link(daily.zone, COLORS.link)
-                            imgui.SameLine()
-                            imgui.TextColored(COLORS.white, "            ")  -- reserve space for /huh motion
-                            draw_list:PopClipRect()
-
-                            -- Right-justified /huh link
-                            local right_y = by + ((by2 - by) - imgui.GetTextLineHeight()) * 0.5
-                            imgui.SetCursorScreenPos({ bx2 - right_w - pad, right_y })
+                            place_after(S(12), piece_w(right_text))
                             draw_command_link(right_text, COLORS.link, "/huh motion", "Send /huh motion")
                         end)
                     elseif npc == "Murdox" and daily.count and daily.target and daily.zone then
@@ -852,8 +886,6 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                             imgui.TextColored(label_color, " found at ")
                             imgui.SameLine()
                             draw_zone_link(daily.zone, highlight_color)
-                            imgui.SameLine()
-                            imgui.TextColored(label_color, "    ")  -- reserve space for count
                         end)
                     else
                         -- Fallback for unrecognized state
@@ -956,15 +988,11 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                             draw_kill_at(target, zone, label_color, highlight_color, { mob_link = true, palalumin = true })
                         end, false)
                     elseif quest == "Find flux" and daily.zone then
-                        draw_bar_with_overlay(nil, "", nil, function(bx, by, bx2, by2)
+                        draw_bar_with_overlay(nil, "", nil, function()
                             imgui.TextColored(COLORS.white, "Find the Flux in ")
                             imgui.SameLine()
                             draw_zone_link(daily.zone, COLORS.link, true)
-                            imgui.SameLine()
-                            imgui.TextColored(COLORS.white, "    ")  -- reserve space for #sea
-                            local discord_w = imgui.CalcTextSize("#sea")
-                            local discord_y = by + ((by2 - by) - imgui.GetTextLineHeight()) * 0.5
-                            imgui.SetCursorScreenPos({ bx2 - discord_w - S(8), discord_y })
+                            place_after(S(16), piece_w("#sea"))
                             draw_link("#sea", COLORS.link, "https://discord.com/channels/696847769444548700/1359317001457242192", "Open CatsEyeXI Discord Channel #sea")
                         end, false)
                     else
@@ -978,7 +1006,7 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                             end, false)
                         end
                     end
-                    imgui.Dummy({ 0, S(2) })
+
                 end
             end
             -- Flagged for the day, but no objective row has been detected yet.
@@ -988,6 +1016,9 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                     draw_notice('Quests active', HEX.amber)
                 end
             end
+        end
+        if (ui._fit_now or 0) > 0 then
+            ui.fit_w = ui._fit_now
         end
         draw_shadow()
     end
