@@ -80,6 +80,7 @@ local function fonts_begin()
         fonts.text = fonts_pending.text
         fonts.semi = fonts_pending.semi
         fonts.bold_italic = fonts_pending.bold_italic
+        fonts.semi_italic = fonts_pending.semi_italic
         fonts_pending = nil
         fonts.ready = true
         measured, measured_n = {}, 0
@@ -90,7 +91,7 @@ local function fonts_begin()
     fonts.tried = true
     if not DYNAMIC then
         local face = imgui.GetFont()
-        fonts.text, fonts.semi, fonts.bold_italic = face, face, face
+        fonts.text, fonts.semi, fonts.bold_italic, fonts.semi_italic = face, face, face, face
         fonts.ready = true
         return
     end
@@ -115,6 +116,7 @@ local function fonts_begin()
         text = text,
         semi = semi,
         bold_italic = add('segoeuiz.ttf', semi),
+        semi_italic = add('seguisbi.ttf', semi),
     }
 end
 
@@ -159,6 +161,33 @@ end
 local function text_right(dl, right, cy, str, hex, font, size, alpha)
     local w = measure(str, font, size)
     text_mid(dl, right - w, cy, str, hex, font, size, alpha)
+end
+
+-- One letter at a time, `spacing` past the glyph. Nil `dl` only measures. Returns the width.
+local function text_spaced(dl, x, cy, str, hex, font, size, spacing)
+    local start = x
+    local i, n = 1, #str
+    while i <= n do
+        local b = str:byte(i)
+        local len = 1
+        if b >= 0xF0 then
+            len = 4
+        elseif b >= 0xE0 then
+            len = 3
+        elseif b >= 0xC0 then
+            len = 2
+        end
+        local letter = str:sub(i, i + len - 1)
+        if dl ~= nil then
+            text_mid(dl, x, cy, letter, hex, font, size)
+        end
+        x = x + measure(letter, font, size) + spacing
+        i = i + len
+    end
+    if x == start then
+        return 0
+    end
+    return x - start - spacing
 end
 
 local function fill(dl, x, y, w, h, hex, radius, alpha, corners)
@@ -226,16 +255,22 @@ local function glyph(dl, kind, cx, cy, hex)
 end
 
 local folded = {}
+local mark_width
 
--- A section heading: chevron, bold-italic title, hairline. Click folds the rows.
--- The hit box is only the title, so it does not stretch the window.
--- Returns true while the section is open.
+-- A section heading, in the /vana sub-panel style: small capitals, tracked, in teal,
+-- with a hairline in the same colour. Click folds the rows. The hit box is only the
+-- title, so it does not stretch the window. Returns true while the section is open.
 local function draw_section_header(text)
-    local h = S(20)
+    local h = S(18)
     local x, y = imgui.GetCursorScreenPos()
-    local title_font = face('bold_italic')
-    local title_size = BODY + 1
-    local title_w = measure(text, title_font, title_size)
+    local title_font = face('semi_italic')
+    local title_size = SMALL
+    local title = string.upper(text)
+    local spacing = S(1.2)
+    if spacing < 1 then
+        spacing = 1
+    end
+    local title_w = text_spaced(nil, 0, 0, title, nil, title_font, title_size, spacing)
     local btn_w = S(14) + title_w + S(6)
     imgui.InvisibleButton('##fold.' .. text, { btn_w, h })
     local hovered = imgui.IsItemHovered()
@@ -247,13 +282,15 @@ local function draw_section_header(text)
     local t = ease('fold.' .. text, hovered and 1 or 0)
     local dl = imgui.GetWindowDrawList()
     local cy = y + h / 2
-    glyph(dl, open and 'down' or 'right', x + S(5), cy, hovered and HEX.text or HEX.faint)
-    text_mid(dl, x + S(14), cy, text, mix(HEX.white, HEX.accent2, t * 0.35), title_font, title_size)
-    local line_x = x + S(14) + title_w + S(6)
+    local color = mix(HEX.teal, HEX.white, t * 0.25)
+    glyph(dl, open and 'down' or 'right', x + S(5), cy, hovered and HEX.teal or HEX.faint)
+    text_spaced(dl, x + S(14), cy, title, color, title_font, title_size, spacing)
+    local line_x = x + S(14) + title_w + S(8)
     local line_end = x + math.max(btn_w, ui.fit_w or 0)
-    if line_end > line_x + S(8) then
-        dl:AddLine({ line_x, cy }, { line_end, cy }, u32(HEX.line), 1)
+    if line_end > line_x + S(4) then
+        dl:AddLine({ line_x, cy }, { line_end, cy }, u32(HEX.teal, 0.85), 1)
     end
+    mark_width(btn_w)
     return open
 end
 
@@ -292,7 +329,7 @@ local function piece_w(s)
     return w or 0
 end
 
-local function mark_width(w)
+function mark_width(w)
     if w > (ui._fit_now or 0) then
         ui._fit_now = w
     end
@@ -312,7 +349,7 @@ local function place_after(min_gap, item_w)
 end
 
 -- A row as wide as its text. fraction nil draws no meter.
--- bar_color COLORS.grey_bar is done (teal); COLORS.dark_grey is not yet known.
+-- The meter is the /vana teal. COLORS.dark_grey is not yet known, so the fill is duller.
 -- content_fn receives (x, y, x, y); right-side pieces use place_after.
 local function draw_bar_with_overlay(fraction, count_text, bar_color, content_fn, add_spacing)
     local has_meter = fraction ~= nil
@@ -372,11 +409,9 @@ local function draw_bar_with_overlay(fraction, count_text, bar_color, content_fn
         if frac <= 0 then
             return
         end
-        local meter = HEX.accent
-        if bar_color == COLORS.grey_bar then
-            meter = HEX.teal
-        elseif bar_color == COLORS.dark_grey then
-            meter = HEX.accent_lo
+        local meter = HEX.teal
+        if bar_color == COLORS.dark_grey then
+            meter = mix(HEX.teal, HEX.off, 0.45)
         end
         fill(dl, mx, my, math.max(mh, mw * frac), mh, meter, mh / 2, 1)
     end
@@ -436,7 +471,7 @@ local function push_window_style()
     for _, entry in ipairs(STYLE_COLORS) do
         imgui.PushStyleColor(entry[1], entry[2])
     end
-    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, { S(8), S(4) })
+    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, { S(8) + 2, S(4) })
     imgui.PushStyleVar(ImGuiStyleVar_WindowRounding, S(5))
     imgui.PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1)
     imgui.PushStyleVar(ImGuiStyleVar_FrameRounding, S(3))
