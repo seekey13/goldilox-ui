@@ -214,11 +214,31 @@ end
 -- Count how many of a given item the player has in their inventory
 -- Checks container: Inventory(0) only
 -- Returns: number of items found, or nil if inventory not accessible
-local function get_item_count(item_name)
-    local ok_res, target_item = pcall(function()
-        return AshitaCore:GetResourceManager():GetItemByName(item_name, 0)
+-- Resolve an item id without letting a bad lookup abort the frame.
+-- Language id varies by client, so try the common Ashita indexes.
+local function lookup_item_id(item_name)
+    local ok_rm, resources = pcall(function()
+        return AshitaCore:GetResourceManager()
     end)
-    if not ok_res or not target_item then
+    if not ok_rm or not resources then
+        return nil
+    end
+    for _, lang in ipairs({ 0, 1, 2, 3 }) do
+        local ok, id = pcall(function()
+            local item = resources:GetItemByName(item_name, lang)
+            if item == nil then return nil end
+            return item.Id
+        end)
+        if ok and type(id) == 'number' and id > 0 then
+            return id
+        end
+    end
+    return nil
+end
+
+local function get_item_count(item_name)
+    local item_id = lookup_item_id(item_name)
+    if not item_id then
         return nil
     end
 
@@ -232,11 +252,15 @@ local function get_item_count(item_name)
     local total = 0
     -- Check inventory (container 0), max 80 slots
     for i = 0, 79 do
-        local ok, entry = pcall(function()
-            return inventory:GetContainerItem(0, i)
+        local ok, count = pcall(function()
+            local entry = inventory:GetContainerItem(0, i)
+            if entry == nil or entry.Id ~= item_id then
+                return 0
+            end
+            return entry.Count or 0
         end)
-        if ok and entry and entry.Id == target_item.Id then
-            total = total + entry.Count
+        if ok and type(count) == 'number' then
+            total = total + count
         end
     end
     return total
@@ -263,6 +287,8 @@ local function get_plain_status(npc, handler, daily)
     elseif handler.status ~= nil then
         local s = handler.status(daily)
         if s then return strip_colors(s), COLORS.white end
+        -- Quest is active even when the item or target has not been parsed yet.
+        if daily.message then return strip_colors(daily.message), COLORS.white end
         return nil
     else
         return daily.message, COLORS.white
@@ -290,12 +316,14 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
         return
     end
 
-    -- Check if there's anything incomplete to display; hide UI if everything is done
+    -- Hide the window only when nothing is still active.
+    -- A flagged quest line with no stored item yet is still active.
     local has_incomplete = false
+    local dailies = status.dailies or {}
+    local pala_quests = status.palalumin_quests or {}
 
-    -- Check goblin dailies: any non-complete quest means something to show
     for _, npc in ipairs(goblin_order) do
-        local daily = status.dailies[npc]
+        local daily = dailies[npc]
         if daily ~= nil and daily.status ~= 'complete' then
             has_incomplete = true
             break
@@ -306,7 +334,7 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
     if not has_incomplete then
         local goblin_completed = 0
         for _, npc in ipairs(goblin_order) do
-            if status.dailies[npc] and status.dailies[npc].status == 'complete' then
+            if dailies[npc] and dailies[npc].status == 'complete' then
                 goblin_completed = goblin_completed + 1
             end
         end
@@ -315,14 +343,22 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
         end
     end
 
-    -- Check palalumin quests: any non-completed quest means something to show
+    -- Palalumin stays visible once flagged until every quest is known complete.
+    -- Missing rows mean the quests are active and no item has been detected yet.
     if not has_incomplete and status.palalumin_flagged then
+        local known = 0
         for _, quest in ipairs(palalumin_quest_order) do
-            local daily = status.palalumin_quests[quest]
-            if daily and not daily.completed then
-                has_incomplete = true
-                break
+            local daily = pala_quests[quest]
+            if daily then
+                known = known + 1
+                if not daily.completed then
+                    has_incomplete = true
+                    break
+                end
             end
+        end
+        if not has_incomplete and known < #palalumin_quest_order then
+            has_incomplete = true
         end
     end
 
@@ -340,9 +376,10 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
     if imgui.Begin('Goldilox - Daily Quests', ui.show, win_flags) then
 
         -- Goblin dailies
+        local tracked_dailies = status.dailies or {}
         local has_goblin_dailies = false
         for _, npc in ipairs(goblin_order) do
-            if status.dailies[npc] ~= nil then
+            if tracked_dailies[npc] ~= nil then
                 has_goblin_dailies = true
                 break
             end
@@ -354,7 +391,7 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
             local completed = 0
             for _, npc in ipairs(goblin_order) do
                 local handler = handlers[npc]
-                local daily = status.dailies[npc]
+                local daily = tracked_dailies[npc]
                 if daily ~= nil then
                     if daily.status == 'complete' then
                         completed = completed + 1
@@ -457,9 +494,14 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
         -- Palalumin quests
         if status.palalumin_flagged then
             local flagged = 0
+            local known = 0
+            local pala_rows = status.palalumin_quests or {}
             for _, quest in ipairs(palalumin_quest_order) do
                 local handler = palalumin_quests[quest]
-                local daily = status.palalumin_quests[quest]
+                local daily = pala_rows[quest]
+                if daily then
+                    known = known + 1
+                end
                 if daily and not daily.completed then
                     flagged = flagged + 1
                     if flagged == 1 then
@@ -540,6 +582,9 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                         end, false)
                     else
                         local s = handler.status(daily)
+                        if not s and daily.message then
+                            s = daily.message
+                        end
                         if s then
                             draw_static_bar(function()
                                 imgui.TextColored(COLORS.white, strip_colors(s))
@@ -549,6 +594,15 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                     -- Blank lines after each quest group
                     imgui.Spacing()
                     imgui.Spacing()
+                end
+            end
+            -- Flagged for the day, but no objective row has been detected yet.
+            if flagged == 0 and known < #palalumin_quest_order then
+                imgui.Spacing()
+                if draw_section_header('Palalumin Quests  ') then
+                    draw_static_bar(function()
+                        imgui.TextColored(COLORS.orange, "Quests active")
+                    end, false)
                 end
             end
         end
