@@ -335,21 +335,32 @@ function mark_width(w)
     end
 end
 
+-- Space between a row's text and the edges of its well. Literal pixels: the
+-- request was 2px inside the row, not extra window padding.
+local ROW_PAD_X = 2
+
 -- The next widget, `item_w` wide, stays on this line. It sits `min_gap` after the
--- last item, or at the right edge once the panel is wider than this line.
+-- last item, or just inside the right pad once the panel is wider than this line.
 -- The width remembered for fitting is the unstretched line, so a short row can shrink.
 local function place_after(min_gap, item_w)
     local left_end = select(1, imgui.GetItemRectMax())
     local row_x = ui._row_x or left_end
     local natural = (left_end - row_x) + min_gap + item_w
     ui._natural = math.max(ui._natural or 0, natural)
-    local target = math.max(ui.fit_w or 0, natural)
-    local gap = math.max(min_gap, target - (left_end - row_x) - item_w)
+    -- fit_w is the well, including the right pad. Stop the widget short of that pad
+    -- so the pad stays 2px and the row does not grow a little every frame.
+    local fitted = (ui.fit_w or 0) - ROW_PAD_X
+    if fitted < natural then
+        fitted = natural
+    end
+    local gap = math.max(min_gap, fitted - (left_end - row_x) - item_w)
     imgui.SameLine(0, gap)
 end
 
--- A row as wide as its text. fraction nil draws no meter.
--- The meter is the /vana teal. COLORS.dark_grey is not yet known, so the fill is duller.
+-- A row. The well always covers the panel width from last frame (ui.fit_w).
+-- The items stay their real width, so a short line does not lock the window open.
+-- fraction nil draws no meter. The meter is the /vana teal.
+-- COLORS.dark_grey is not yet known, so the fill is duller.
 -- content_fn receives (x, y, x, y); right-side pieces use place_after.
 local function draw_bar_with_overlay(fraction, count_text, bar_color, content_fn, add_spacing)
     local has_meter = fraction ~= nil
@@ -368,9 +379,13 @@ local function draw_bar_with_overlay(fraction, count_text, bar_color, content_fn
     if pad_y > 0 then
         imgui.Dummy({ 0, pad_y })
     end
-    local cx, cy = imgui.GetCursorScreenPos()
-    ui._row_x = cx
+    -- _row_x is the well's left, so the left pad is part of the measured line.
+    local row_x = select(1, imgui.GetCursorScreenPos())
+    ui._row_x = row_x
     ui._natural = nil
+    imgui.Dummy({ ROW_PAD_X, 1 })
+    imgui.SameLine(0, 0)
+    local cx, cy = imgui.GetCursorScreenPos()
     if content_fn then
         content_fn(cx, cy, cx, cy)
     end
@@ -379,6 +394,8 @@ local function draw_bar_with_overlay(fraction, count_text, bar_color, content_fn
         local hex = (bar_color == COLORS.grey_bar) and HEX.dim or HEX.text2
         imgui.TextColored(rgba(hex), count_text)
     end
+    imgui.SameLine(0, 0)
+    imgui.Dummy({ ROW_PAD_X, 1 })
     if has_meter then
         imgui.Dummy({ 0, S(4) })
     end
@@ -391,18 +408,22 @@ local function draw_bar_with_overlay(fraction, count_text, bar_color, content_fn
     local x2, y2 = imgui.GetItemRectMax()
     local row_w = math.max(1, x2 - x1)
     local row_h = math.max(1, y2 - y1)
-    mark_width(ui._natural or row_w)
+    -- _natural ends at the right-hand text. The right dummy is the other 2px.
+    -- A short row (oak cudgel, Numbing Norman) must not report the stretched
+    -- width, or the panel could never shrink back to the text.
+    mark_width(ui._natural and (ui._natural + ROW_PAD_X) or row_w)
+    local well_w = math.max(row_w, ui.fit_w or 0)
 
     local function paint_back()
         local radius = S(3)
-        fill(dl, x1, y1, row_w, row_h, HEX.well, radius, 1)
-        outline(dl, x1, y1, row_w, row_h, HEX.line, radius, 1)
-        if not has_meter or row_w <= S(8) then
+        fill(dl, x1, y1, well_w, row_h, HEX.well, radius, 1)
+        outline(dl, x1, y1, well_w, row_h, HEX.line, radius, 1)
+        if not has_meter or well_w <= S(8) then
             return
         end
         local mh = math.max(2, S(3))
         local mx = x1 + S(4)
-        local mw = row_w - S(8)
+        local mw = well_w - S(8)
         local my = y2 - S(2) - mh
         fill(dl, mx, my, mw, mh, HEX.off, mh / 2, 1)
         local frac = math.max(0, math.min(1, fraction or 0))
@@ -423,7 +444,7 @@ local function draw_bar_with_overlay(fraction, count_text, bar_color, content_fn
     elseif has_meter then
         local mh = math.max(2, S(3))
         local my = y2 - S(2) - mh
-        fill(dl, x1, my, row_w, mh, HEX.off, mh / 2, 1)
+        fill(dl, x1, my, well_w, mh, HEX.off, mh / 2, 1)
     end
     if add_spacing ~= false then
         imgui.Dummy({ 0, S(1) })
@@ -471,7 +492,7 @@ local function push_window_style()
     for _, entry in ipairs(STYLE_COLORS) do
         imgui.PushStyleColor(entry[1], entry[2])
     end
-    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, { S(8) + 2, S(4) })
+    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, { S(8), S(4) })
     imgui.PushStyleVar(ImGuiStyleVar_WindowRounding, S(5))
     imgui.PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1)
     imgui.PushStyleVar(ImGuiStyleVar_FrameRounding, S(3))
