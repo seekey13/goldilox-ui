@@ -235,8 +235,9 @@ local function face(which)
 end
 
 -- A chevron or an × drawn with lines, so no icon font is required.
-local function glyph(dl, kind, cx, cy, hex)
-    local k = S(11) / 24
+-- `scale` grows the mark. The close control uses 1.5.
+local function glyph(dl, kind, cx, cy, hex, scale)
+    local k = S(11) / 24 * (scale or 1)
     local col = u32(hex)
     local thickness = math.max(1, 2 * k)
     local function p(px, py)
@@ -335,9 +336,9 @@ function mark_width(w)
     end
 end
 
--- Space between a row's text and the edges of its well. Literal pixels: the
--- request was 2px inside the row, not extra window padding.
-local ROW_PAD_X = 2
+-- Space between a row's text and the edges of its well. 2px still read as
+-- flush against the bar, so the inset is 6px on each side.
+local ROW_PAD_X = 6
 
 -- The next widget, `item_w` wide, stays on this line. It sits `min_gap` after the
 -- last item, or just inside the right pad once the panel is wider than this line.
@@ -523,16 +524,17 @@ local function draw_title()
     local title_end = title_w + S(6) + note_w
     mark_width(title_end + S(16))
     -- Last frame's content width puts the × at the corner without forcing a wide panel.
-    local cx = x + math.max(title_end + S(10), (ui.fit_w or 0) - S(4))
+    local close_box = S(14) * 1.5
+    local cx = x + math.max(title_end + S(10), (ui.fit_w or 0) - S(6))
     local restore_x, restore_y = imgui.GetCursorScreenPos()
-    imgui.SetCursorScreenPos({ cx - S(7), cy - S(7) })
-    imgui.InvisibleButton('##goldilox.close', { S(14), S(14) })
+    imgui.SetCursorScreenPos({ cx - close_box / 2, cy - close_box / 2 })
+    imgui.InvisibleButton('##goldilox.close', { close_box, close_box })
     local close_hover = imgui.IsItemHovered()
     if imgui.IsItemClicked(0) then
         ui.show[1] = false
     end
     imgui.SetCursorScreenPos({ restore_x, restore_y })
-    glyph(dl, 'close', cx, cy, close_hover and HEX.rose or HEX.dim)
+    glyph(dl, 'close', cx, cy, close_hover and HEX.rose or HEX.dim, 1.5)
     local line_end = x + math.max(title_end, ui.fit_w or 0)
     dl:AddLine({ x, y + h }, { line_end, y + h }, u32(HEX.border), 1)
 end
