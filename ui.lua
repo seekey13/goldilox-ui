@@ -258,11 +258,26 @@ end
 local folded = {}
 local mark_width
 
+-- Titles, section headers, and notices stay this far in from the content edge.
+-- Quest wells use only BAR_PAD_X, the gap between the well and the window edge.
+local CHROME_PAD_X = 8
+local BAR_PAD_X = 4
+
+local function indent_chrome()
+    local x, y = imgui.GetCursorScreenPos()
+    local pad = S(CHROME_PAD_X)
+    if pad > 0 then
+        imgui.SetCursorScreenPos({ x + pad, y })
+    end
+    return pad
+end
+
 -- A section heading, in the /vana sub-panel style: small capitals, tracked, in teal,
 -- with a hairline in the same colour. Click folds the rows. The hit box is only the
 -- title, so it does not stretch the window. Returns true while the section is open.
 local function draw_section_header(text)
     local h = S(18)
+    local pad = indent_chrome()
     local x, y = imgui.GetCursorScreenPos()
     local title_font = face('semi_italic')
     local title_size = SMALL
@@ -287,11 +302,13 @@ local function draw_section_header(text)
     glyph(dl, open and 'down' or 'right', x + S(5), cy, hovered and HEX.teal or HEX.faint)
     text_spaced(dl, x + S(14), cy, title, color, title_font, title_size, spacing)
     local line_x = x + S(14) + title_w + S(8)
-    local line_end = x + math.max(btn_w, ui.fit_w or 0)
+    -- fit_w is measured from the window edge. x is already inset, so the hairline
+    -- still ends on the quest bars' right edge.
+    local line_end = x + math.max(btn_w, (ui.fit_w or 0) - pad)
     if line_end > line_x + S(4) then
         dl:AddLine({ line_x, cy }, { line_end, cy }, u32(HEX.teal, 0.85), 1)
     end
-    mark_width(btn_w)
+    mark_width(pad + btn_w)
     return open
 end
 
@@ -459,12 +476,13 @@ end
 
 -- Amber or teal callout: a wash, a stripe down the left, the line in that colour.
 local function draw_notice(text, hex)
+    local pad = indent_chrome()
     local h = S(18)
     local tw = measure(text, face('text'), SMALL + 1)
     local w = tw + S(10)
     local x, y = imgui.GetCursorScreenPos()
     imgui.Dummy({ w, h })
-    mark_width(w)
+    mark_width(pad + w)
     local dl = imgui.GetWindowDrawList()
     fill(dl, x, y, w, h, hex, S(3), 0.12)
     local left = ImDrawFlags_RoundCornersLeft or ImDrawCornerFlags_Left
@@ -493,7 +511,9 @@ local function push_window_style()
     for _, entry in ipairs(STYLE_COLORS) do
         imgui.PushStyleColor(entry[1], entry[2])
     end
-    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, { S(8), S(4) })
+    -- BAR_PAD_X is the gap outside each quest well. Titles, headers, and notices
+    -- indent themselves further by CHROME_PAD_X.
+    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, { BAR_PAD_X, S(4) })
     imgui.PushStyleVar(ImGuiStyleVar_WindowRounding, S(5))
     imgui.PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1)
     imgui.PushStyleVar(ImGuiStyleVar_FrameRounding, S(3))
@@ -510,6 +530,7 @@ local function pop_window_style()
 end
 
 local function draw_title()
+    local pad = indent_chrome()
     local h = S(18)
     local x, y = imgui.GetCursorScreenPos()
     imgui.Dummy({ 0, h })
@@ -522,10 +543,14 @@ local function draw_title()
     text_mid(dl, x + title_w + S(6), cy, 'Daily quests', HEX.faint, face('text'), SMALL)
     local note_w = measure('Daily quests', face('text'), SMALL)
     local title_end = title_w + S(6) + note_w
-    mark_width(title_end + S(16))
     -- Last frame's content width puts the × at the corner without forcing a wide panel.
+    -- fit_w is the panel width from the window's left edge. x is already inset.
     local close_box = S(14) * 1.5
-    local cx = x + math.max(title_end + S(10), (ui.fit_w or 0) - S(6))
+    local edge_inset = pad + S(6)
+    local room = math.max(title_end + S(10), (ui.fit_w or 0) - pad - edge_inset)
+    local cx = x + room
+    local content_left = x - pad
+    mark_width(cx + close_box / 2 - content_left)
     local restore_x, restore_y = imgui.GetCursorScreenPos()
     imgui.SetCursorScreenPos({ cx - close_box / 2, cy - close_box / 2 })
     imgui.InvisibleButton('##goldilox.close', { close_box, close_box })
@@ -535,8 +560,8 @@ local function draw_title()
     end
     imgui.SetCursorScreenPos({ restore_x, restore_y })
     glyph(dl, 'close', cx, cy, close_hover and HEX.rose or HEX.dim, 1.5)
-    local line_end = x + math.max(title_end, ui.fit_w or 0)
-    dl:AddLine({ x, y + h }, { line_end, y + h }, u32(HEX.border), 1)
+    local span = math.max(ui.fit_w or 0, cx + close_box / 2 - content_left)
+    dl:AddLine({ content_left, y + h }, { content_left + span, y + h }, u32(HEX.border), 1)
 end
 
 local function draw_shadow()
@@ -767,6 +792,75 @@ local function get_plain_status(npc, handler, daily)
     end
 end
 
+-- The ImGui window name. VanaCore's Layout page uses this string as the window's id.
+local LAYOUT_WINDOW = 'Goldilox - Daily Quests'
+
+local function vana_layout()
+    local api = rawget(_G, 'vana')
+    local layout = api and api.layout
+    if layout == nil or layout.set == nil then
+        return nil
+    end
+    return api, layout
+end
+
+-- True once config\layout.json has this window, so a later launch does not
+-- write over a place or scale set from the Layout page.
+local function layout_file_has_window(root)
+    local file = io.open(root .. '\\config\\layout.json', 'rb')
+    if file == nil then
+        return false
+    end
+    local text = file:read('*a') or ''
+    file:close()
+    return text:find('"Goldilox - Daily Quests"', 1, true) ~= nil
+end
+
+-- Last place ImGui saved, used when the panel is closed so Layout can still list it.
+local function imgui_ini_pos(root)
+    local file = io.open(root .. '\\config\\imgui.ini', 'rb')
+    if file == nil then
+        return nil
+    end
+    local text = file:read('*a') or ''
+    file:close()
+    local x, y = text:match('%[Window%]%[Goldilox %- Daily Quests%]\r?\nPos=(%-?%d+),(%-?%d+)')
+    if x == nil then
+        return nil
+    end
+    return tonumber(x), tonumber(y)
+end
+
+-- VanaCore records an ImGui window on the Addons Layout page after it has a saved
+-- place. Remember this panel once, at its current position, with no extra scale
+-- (the panel already sizes itself from the screen height).
+local function register_layout(x, y)
+    if ui._layout_set then
+        return
+    end
+    local api, layout = vana_layout()
+    if api == nil then
+        return
+    end
+    local root = api.paths and api.paths.install
+    if type(root) == 'string' and layout_file_has_window(root) then
+        ui._layout_set = true
+        return
+    end
+    if x == nil or y == nil then
+        if type(root) ~= 'string' then
+            return
+        end
+        x, y = imgui_ini_pos(root)
+    end
+    if type(x) ~= 'number' or type(y) ~= 'number' then
+        return
+    end
+    if pcall(layout.set, LAYOUT_WINDOW, x, y, 1) then
+        ui._layout_set = true
+    end
+end
+
 -- Toggle the UI window visibility
 function ui.toggle()
     ui.show[1] = not ui.show[1]
@@ -780,6 +874,8 @@ end
 --   palalumin_quest_order - ordered list of palalumin quest names
 --   palalumin_quests  - palalumin quest handler table
 function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalumin_quests)
+    -- Listed on the Layout page even while this panel is closed, same as AMAN Tracker.
+    register_layout()
     if not ui.show[1] then
         return
     end
@@ -864,7 +960,9 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
         imgui.PushFont(fonts.text, S(BODY))
         font_pushed = true
     end
-    if imgui.Begin('Goldilox - Daily Quests', ui.show, win_flags) then
+    if imgui.Begin(LAYOUT_WINDOW, ui.show, win_flags) then
+        local place_x, place_y = imgui.GetWindowPos()
+        register_layout(place_x, place_y)
         ui._fit_now = 0
         draw_title()
 
