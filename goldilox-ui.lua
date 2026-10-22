@@ -22,9 +22,10 @@ local default_status = T{
 
 local status = nil
 
--- local ZONE_ALTAIEU = 33
+local ZONE_ALTAIEU = 33
 local ZONE_LOWERJEUNO = 245
 local ZONE_HUXZOI = 34
+local ZONE_RUHMET = 35
 
 local DIAMOND = "\129\158"
 local FULL_DIAMOND = "\129\159"
@@ -73,8 +74,16 @@ local function update_status()
         -- print(chat.header('Goldilox') .. 'Previous state was for a different day, resetting for today.')
         status.dailies = {}
         status.palalumin_quests = {}
+        status.palalumin_flagged = false
         status.deadline = deadline
         settings.save()
+    end
+
+    if status.dailies == nil then
+        status.dailies = {}
+    end
+    if status.palalumin_quests == nil then
+        status.palalumin_quests = {}
     end
 end
 
@@ -205,7 +214,11 @@ local function handle_gobbie_dialogue(e)  -- Sent under mode 9
     Murdox : Go to Bhaflau Thickets and kill 20 Treants!
     --]]
 
-    local npc, message = string.match(e.message, ".-(%a+).-:.-(%a+.*)\n")
+    local clean = strip_colors(e.message or "")
+    if not clean:match("\n$") then
+        clean = clean .. "\n"
+    end
+    local npc, message = string.match(clean, ".-(%a+).-:.-(%a+.*)\n")
     if message == nil then
         return
     end
@@ -330,32 +343,76 @@ local function handle_daily_quest_updates(e)  -- Sent under mode 121
     end
 end
 
+local function is_lumoria_zone(zone)
+    return zone == ZONE_ALTAIEU or zone == ZONE_HUXZOI or zone == ZONE_RUHMET
+end
+
+-- Record every Palalumin objective in one menu, not only the first matching line.
 local function handle_palalumin_dialogue(e)
-    -- Try matching filled diamond first (completed quest)
-    local quest, objective = string.match(e.message, "\129\159 (.-): (.+)\n")
-    local is_completed = quest ~= nil
-    -- Try matching open diamond (incomplete quest)
-    if not quest then
-        quest, objective = string.match(e.message, "\129\158 (.-): (.+)\n")
+    local clean = strip_colors(e.message or "")
+    local found = false
+
+    local function consider(quest, objective, is_completed)
+        if type(quest) ~= 'string' or type(objective) ~= 'string' then
+            return
+        end
+        quest = quest:trim()
+        objective = objective:trim()
+        if quest == '' or objective == '' or not palalumin_quests[quest] then
+            return
+        end
+        if not found then
+            update_status()
+            found = true
+        end
+        status.palalumin_flagged = true
+        if not status.palalumin_quests then
+            status.palalumin_quests = {}
+        end
+        -- Keep a completed row if a second pattern sees the same quest.
+        local prev = status.palalumin_quests[quest]
+        if prev and prev.completed and not is_completed then
+            return
+        end
+        local data = {message = objective}
+        if is_completed or objective:lower() == 'completed' then
+            data.completed = true
+        end
+        status.palalumin_quests[quest] = data
+        palalumin_quests[quest].talk(data)
     end
-    local handler = palalumin_quests[quest]
-    if not handler then
-        return
+
+    local function scan(pattern, is_completed)
+        local start_at = 1
+        while true do
+            local first, last, quest, objective = string.find(clean, pattern, start_at)
+            if not first then
+                break
+            end
+            consider(quest, objective, is_completed)
+            start_at = last + 1
+        end
     end
-    objective = objective:trim()
-    update_status()
-    status.palalumin_flagged = true
-    if not status.palalumin_quests then
-        status.palalumin_quests = {}
+
+    -- Shift-JIS diamonds used by the FFXI client, then UTF-8 fallbacks.
+    scan("\129\159%s+(.-):%s*([^\r\n]+)", true)
+    scan("\129\158%s+(.-):%s*([^\r\n]+)", false)
+    scan("\226\151\134%s+(.-):%s*([^\r\n]+)", true)
+    scan("\226\151\135%s+(.-):%s*([^\r\n]+)", false)
+
+    for quest_name, _ in pairs(palalumin_quests) do
+        local already = found and status.palalumin_quests and status.palalumin_quests[quest_name]
+        if not already then
+            local objective = string.match(clean, quest_name .. "%s*:%s*([^\r\n]+)")
+            if objective then
+                consider(quest_name, objective, objective:trim():lower() == 'completed')
+            end
+        end
     end
-    local data = {message = objective}
-    if is_completed then
-        data.completed = true
+
+    if found then
+        settings.save()
     end
-    status.palalumin_quests[quest] = data
-    palalumin_quests[quest].talk(data)
-    -- print(palalumin_quests[quest].status(data))
-    settings.save()
 end
 
 ashita.events.register('text_in', 'text_in_cb', function (e)
@@ -394,7 +451,7 @@ ashita.events.register('text_in', 'text_in_cb', function (e)
     local zone = AshitaCore:GetMemoryManager():GetParty():GetMemberZone(0)
     if zone == ZONE_LOWERJEUNO then
         return handle_gobbie_dialogue(e)
-    elseif zone == ZONE_HUXZOI then
+    elseif is_lumoria_zone(zone) then
         return handle_palalumin_dialogue(e)
     end
 end)
@@ -431,7 +488,7 @@ ashita.events.register('command', 'command_cb', function(e)
         elseif daily.status == 'return' then
             print(preamble .. chat.color1(2, "Return to " .. npc .. "."))
         elseif handler.status ~= nil then
-            local s = handler.status(daily)
+            local s = handler.status(daily) or daily.message
             if s then print(preamble .. strip_colors(s)) end
         end
     end
@@ -445,19 +502,27 @@ ashita.events.register('command', 'command_cb', function(e)
     end
     if status.palalumin_flagged then
         local flagged = 0
+        local known = 0
+        local pala_rows = status.palalumin_quests or {}
         for _, quest in ipairs(palalumin_quest_order) do
             handler = palalumin_quests[quest]
-            daily = status.palalumin_quests[quest]
+            daily = pala_rows[quest]
+            if daily then
+                known = known + 1
+            end
             if daily and not daily.completed then
                 flagged = flagged + 1
                 if flagged == 1 then  -- First palalumin quest
                     print(chat.header(addon.name) .. "Palalumin quests:")
                 end
-                print(chat.header(addon.name) .. DIAMOND .. " " .. handler.status(daily))
-                -- for k, v in pairs(data) do
-                --     print(k .. "=" .. v)
-                -- end
+                local s = handler.status(daily) or daily.message
+                if s then
+                    print(chat.header(addon.name) .. DIAMOND .. " " .. strip_colors(s))
+                end
             end
+        end
+        if flagged == 0 and known < #palalumin_quest_order then
+            print(chat.header(addon.name) .. "Palalumin quests active.")
         end
     end
 end)

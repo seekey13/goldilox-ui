@@ -4,80 +4,574 @@ local ui = {}
 ui.show = { true }
 ui.shift_held = false
 
--- Shared color palette
-local COLORS = {
-    white       = { 1.0, 1.0, 1.0, 1.0 },
-    green       = { 0.0, 1.0, 0.0, 0.25 },
-    link        = { 0.0, 1.0, 0.0, 1.0 },
-    orange      = { 1.0, 0.6, 0.0, 1.0 },
-    cyan        = { 0.2, 0.8, 1.0, 1.0 },
-    grey_text   = { 0.5, 0.5, 0.5, 1.0 },
-    grey_bar    = { 0.4, 0.4, 0.4, 1.0 },
-    dark_grey   = { 0.3, 0.3, 0.3, 1.0 },
+-- The /vana window's palette (addons/vanacore/vana/draw.lua). Hex until drawn.
+local HEX = {
+    bg = '#161822', border = '#2A2E3E', line = '#242838', well = '#0E1017',
+    hover = '#1F2334', white = '#FFFFFF', text = '#E8EAF1', text2 = '#BDC1D0',
+    dim = '#7B8095', faint = '#4E536A', accent = '#7AA2F7', accent2 = '#A9C1FF',
+    accent_lo = '#3E5CB3', teal = '#5FD3B3', amber = '#E8B45C', rose = '#EE6F78',
+    off = '#2B2F42', popup = '#0F1118',
 }
 
-local SPACING = 10
+local function rgba(hex, alpha)
+    return {
+        tonumber(hex:sub(2, 3), 16) / 255,
+        tonumber(hex:sub(4, 5), 16) / 255,
+        tonumber(hex:sub(6, 7), 16) / 255,
+        alpha or 1,
+    }
+end
 
--- Draw a collapsible section header (grey style)
--- Returns true if the section is expanded
+local function u32(hex, alpha)
+    local r = tonumber(hex:sub(2, 3), 16)
+    local g = tonumber(hex:sub(4, 5), 16)
+    local b = tonumber(hex:sub(6, 7), 16)
+    local a = math.floor(math.max(0, math.min(1, alpha or 1)) * 255 + 0.5)
+    return ((a * 256 + b) * 256 + g) * 256 + r
+end
+
+local function mix(a, b, t)
+    t = math.max(0, math.min(1, t or 0))
+    local out = '#'
+    for i = 2, 6, 2 do
+        local x = tonumber(a:sub(i, i + 1), 16)
+        local y = tonumber(b:sub(i, i + 1), 16)
+        out = out .. string.format('%02X', math.floor(x + (y - x) * t + 0.5))
+    end
+    return out
+end
+
+-- Same roles the quest rows already used, now in that palette.
+-- grey_bar and dark_grey stay as sentinels for the meter (done, or not yet known).
+local COLORS = {
+    white     = rgba(HEX.text),
+    green     = rgba(HEX.teal),
+    link      = rgba(HEX.accent),
+    orange    = rgba(HEX.amber),
+    cyan      = rgba(HEX.accent2),
+    grey_text = rgba(HEX.dim),
+    grey_bar  = rgba(HEX.teal),
+    dark_grey = rgba(HEX.off),
+}
+
+-- Screen height sets the size the way /vana does: 1440px tall is 1.1, held between 0.75 and 1.6.
+local scale = 1
+local function S(n)
+    return math.floor(n * scale + 0.5)
+end
+
+local function update_scale()
+    local h = 1080
+    local ok, io = pcall(imgui.GetIO)
+    if ok and io and io.DisplaySize then
+        h = tonumber(io.DisplaySize.y) or h
+    end
+    scale = math.max(0.75, math.min(1.6, h / 1440)) * 1.1
+end
+
+local BODY, SMALL = 16, 13.5
+local DYNAMIC = (tonumber(IMGUI_VERSION_NUM) or 0) >= 19200
+local fonts = { tried = false, ready = false }
+local fonts_pending = nil
+local measured, measured_scale, measured_n = {}, nil, 0
+
+local function fonts_begin()
+    if fonts_pending then
+        fonts.text = fonts_pending.text
+        fonts.semi = fonts_pending.semi
+        fonts.bold_italic = fonts_pending.bold_italic
+        fonts.semi_italic = fonts_pending.semi_italic
+        fonts_pending = nil
+        fonts.ready = true
+        measured, measured_n = {}, 0
+    end
+    if fonts.tried then
+        return
+    end
+    fonts.tried = true
+    if not DYNAMIC then
+        local face = imgui.GetFont()
+        fonts.text, fonts.semi, fonts.bold_italic, fonts.semi_italic = face, face, face, face
+        fonts.ready = true
+        return
+    end
+    local dir = ((os.getenv and os.getenv('WINDIR')) or 'C:\\Windows') .. '\\Fonts\\'
+    local function add(file, fallback)
+        local path = dir .. file
+        local handle = io.open(path, 'rb')
+        if not handle then
+            return fallback
+        end
+        handle:close()
+        local ok, face = pcall(imgui.AddFontFromFileTTF, path, 18)
+        if ok and face then
+            return face
+        end
+        return fallback
+    end
+    -- Usable from the next frame: ImGui cannot draw a font in the frame it was added.
+    local text = add('segoeui.ttf', imgui.GetFont())
+    local semi = add('seguisb.ttf', text)
+    fonts_pending = {
+        text = text,
+        semi = semi,
+        bold_italic = add('segoeuiz.ttf', semi),
+        semi_italic = add('seguisbi.ttf', semi),
+    }
+end
+
+local function measure(str, font, size)
+    str = tostring(str or '')
+    if measured_scale ~= scale or measured_n > 4000 then
+        measured, measured_scale, measured_n = {}, scale, 0
+    end
+    local key = tostring(font) .. '|' .. tostring(size) .. '|' .. str
+    local found = measured[key]
+    if not found then
+        local w, h
+        if DYNAMIC and fonts.ready and font then
+            imgui.PushFont(font, S(size))
+            w, h = imgui.CalcTextSize(str)
+            imgui.PopFont()
+        else
+            w, h = imgui.CalcTextSize(str)
+        end
+        found = { w or 0, h or 0 }
+        measured[key] = found
+        measured_n = measured_n + 1
+    end
+    return found[1], found[2]
+end
+
+local function text_mid(dl, x, cy, str, hex, font, size, alpha)
+    local _, h = measure(str, font, size)
+    local y = cy - h / 2
+    if DYNAMIC and fonts.ready then
+        y = y - math.floor(h * 0.06 + 0.5)
+    end
+    if DYNAMIC and fonts.ready and font then
+        imgui.PushFont(font, S(size))
+        dl:AddText({ x, y }, u32(hex, alpha), str)
+        imgui.PopFont()
+    else
+        dl:AddText({ x, y }, u32(hex, alpha), str)
+    end
+end
+
+local function text_right(dl, right, cy, str, hex, font, size, alpha)
+    local w = measure(str, font, size)
+    text_mid(dl, right - w, cy, str, hex, font, size, alpha)
+end
+
+-- One letter at a time, `spacing` past the glyph. Nil `dl` only measures. Returns the width.
+local function text_spaced(dl, x, cy, str, hex, font, size, spacing)
+    local start = x
+    local i, n = 1, #str
+    while i <= n do
+        local b = str:byte(i)
+        local len = 1
+        if b >= 0xF0 then
+            len = 4
+        elseif b >= 0xE0 then
+            len = 3
+        elseif b >= 0xC0 then
+            len = 2
+        end
+        local letter = str:sub(i, i + len - 1)
+        if dl ~= nil then
+            text_mid(dl, x, cy, letter, hex, font, size)
+        end
+        x = x + measure(letter, font, size) + spacing
+        i = i + len
+    end
+    if x == start then
+        return 0
+    end
+    return x - start - spacing
+end
+
+local function fill(dl, x, y, w, h, hex, radius, alpha, corners)
+    if w <= 0 or h <= 0 then
+        return
+    end
+    local col = u32(hex, alpha)
+    if corners then
+        dl:AddRectFilled({ x, y }, { x + w, y + h }, col, radius or 0, corners)
+    else
+        dl:AddRectFilled({ x, y }, { x + w, y + h }, col, radius or 0)
+    end
+end
+
+local function outline(dl, x, y, w, h, hex, radius, alpha)
+    if w <= 0 or h <= 0 then
+        return
+    end
+    dl:AddRect({ x, y }, { x + w, y + h }, u32(hex, alpha), radius or 0)
+end
+
+local anim, last_clock, frame_dt = {}, nil, 0
+local function tick()
+    local now = os.clock()
+    frame_dt = last_clock and math.max(0, math.min(0.1, now - last_clock)) or 0
+    last_clock = now
+end
+
+local function ease(id, target)
+    local v = anim[id]
+    if v == nil then
+        v = target
+    else
+        v = v + (target - v) * math.min(1, frame_dt * 18)
+        if math.abs(v - target) < 0.004 then
+            v = target
+        end
+    end
+    anim[id] = v
+    return v
+end
+
+local function face(which)
+    return fonts[which] or imgui.GetFont()
+end
+
+-- A chevron or an × drawn with lines, so no icon font is required.
+-- `scale` grows the mark. The close control uses 1.5.
+local function glyph(dl, kind, cx, cy, hex, scale)
+    local k = S(11) / 24 * (scale or 1)
+    local col = u32(hex)
+    local thickness = math.max(1, 2 * k)
+    local function p(px, py)
+        return { cx + (px - 12) * k, cy + (py - 12) * k }
+    end
+    if kind == 'right' then
+        dl:AddLine(p(9, 5), p(16, 12), col, thickness)
+        dl:AddLine(p(16, 12), p(9, 19), col, thickness)
+    elseif kind == 'close' then
+        dl:AddLine(p(6, 6), p(18, 18), col, thickness)
+        dl:AddLine(p(18, 6), p(6, 18), col, thickness)
+    else
+        dl:AddLine(p(5, 9), p(12, 16), col, thickness)
+        dl:AddLine(p(12, 16), p(19, 9), col, thickness)
+    end
+end
+
+local folded = {}
+local mark_width
+
+-- Titles, section headers, and notices stay this far in from the content edge.
+-- Quest wells use only BAR_PAD_X, the gap between the well and the window edge.
+local CHROME_PAD_X = 8
+local BAR_PAD_X = 4
+
+local function indent_chrome()
+    local x, y = imgui.GetCursorScreenPos()
+    local pad = S(CHROME_PAD_X)
+    if pad > 0 then
+        imgui.SetCursorScreenPos({ x + pad, y })
+    end
+    return pad
+end
+
+-- A section heading, in the /vana sub-panel style: small capitals, tracked, in teal,
+-- with a hairline in the same colour. Click folds the rows. The hit box is only the
+-- title, so it does not stretch the window. Returns true while the section is open.
 local function draw_section_header(text)
-    imgui.PushStyleColor(ImGuiCol_Header,        COLORS.dark_grey)
-    imgui.PushStyleColor(ImGuiCol_HeaderHovered,  COLORS.grey_bar)
-    imgui.PushStyleColor(ImGuiCol_HeaderActive,   COLORS.grey_text)
-    local expanded = imgui.CollapsingHeader(text, ImGuiTreeNodeFlags_DefaultOpen)
+    local h = S(18)
+    local pad = indent_chrome()
+    local x, y = imgui.GetCursorScreenPos()
+    local title_font = face('semi_italic')
+    local title_size = SMALL
+    local title = string.upper(text)
+    local spacing = S(1.2)
+    if spacing < 1 then
+        spacing = 1
+    end
+    local title_w = text_spaced(nil, 0, 0, title, nil, title_font, title_size, spacing)
+    local btn_w = S(14) + title_w + S(6)
+    imgui.InvisibleButton('##fold.' .. text, { btn_w, h })
+    local hovered = imgui.IsItemHovered()
+    local clicked = imgui.IsItemClicked(0)
+    if clicked then
+        folded[text] = not folded[text] or nil
+    end
+    local open = folded[text] ~= true
+    local t = ease('fold.' .. text, hovered and 1 or 0)
+    local dl = imgui.GetWindowDrawList()
+    local cy = y + h / 2
+    local color = mix(HEX.teal, HEX.white, t * 0.25)
+    glyph(dl, open and 'down' or 'right', x + S(5), cy, hovered and HEX.teal or HEX.faint)
+    text_spaced(dl, x + S(14), cy, title, color, title_font, title_size, spacing)
+    local line_x = x + S(14) + title_w + S(8)
+    -- fit_w is measured from the window edge. x is already inset, so the hairline
+    -- still ends on the quest bars' right edge.
+    local line_end = x + math.max(btn_w, (ui.fit_w or 0) - pad)
+    if line_end > line_x + S(4) then
+        dl:AddLine({ line_x, cy }, { line_end, cy }, u32(HEX.teal, 0.85), 1)
+    end
+    mark_width(pad + btn_w)
+    return open
+end
+
+local function show_tooltip(text)
+    if text == nil or text == '' then
+        return
+    end
+    imgui.PushStyleColor(ImGuiCol_PopupBg, rgba(HEX.popup, 0.97))
+    imgui.PushStyleColor(ImGuiCol_Border, rgba(HEX.border))
+    imgui.PushStyleColor(ImGuiCol_Text, rgba(HEX.text))
+    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, { S(9), S(6) })
+    imgui.PushStyleVar(ImGuiStyleVar_WindowRounding, S(4))
+    imgui.PushStyleVar(ImGuiStyleVar_PopupRounding, S(4))
+    imgui.PushStyleVar(ImGuiStyleVar_PopupBorderSize, 1)
+    local pushed = false
+    if DYNAMIC and fonts.ready and fonts.text then
+        imgui.PushFont(fonts.text, S(SMALL + 0.5))
+        pushed = true
+    end
+    if imgui.BeginTooltip() then
+        imgui.TextUnformatted(text)
+        imgui.EndTooltip()
+    end
+    if pushed then
+        imgui.PopFont()
+    end
+    imgui.PopStyleVar(4)
     imgui.PopStyleColor(3)
-    return expanded
 end
 
--- Draw a progress bar with count right-justified; returns bar rect for overlay
--- fraction:   0.0 – 1.0
--- count_text: e.g. "4/17", shown on the right
--- bar_color:  optional RGBA table; if provided, overrides the default bar color
-local function draw_progress_bar(fraction, count_text, bar_color)
-    imgui.PushStyleColor(ImGuiCol_PlotHistogram, bar_color or COLORS.green)
-    imgui.ProgressBar(fraction, { -1, 0 }, "")  -- empty overlay; we draw text manually
-    imgui.PopStyleColor(1)
-
-    local min_x, min_y = imgui.GetItemRectMin()
-    local max_x, max_y = imgui.GetItemRectMax()
-    local draw_list = imgui.GetWindowDrawList()
-    -- Grey count text for grey bars, white otherwise
-    local text_color = (bar_color == COLORS.grey_bar) and 0xFF808080 or 0xFFFFFFFF
-    local pad = 4
-    local text_y = min_y + ((max_y - min_y) - imgui.GetTextLineHeight()) * 0.5
-    -- Right-justify count_text
-    local count_width = imgui.CalcTextSize(count_text)
-    draw_list:AddText({ max_x - count_width - pad, text_y }, text_color, count_text)
-
-    return min_x, min_y, max_x, max_y
+local function piece_w(s)
+    local w = imgui.CalcTextSize(tostring(s or ''))
+    if type(w) == 'table' then
+        return w.x or w[1] or 0
+    end
+    return w or 0
 end
 
--- Position the imgui cursor inside a bar rect for overlaying linked widgets
-local function begin_bar_overlay(min_x, min_y, max_y)
-    local pad = 4
-    local text_y = min_y + ((max_y - min_y) - imgui.GetTextLineHeight()) * 0.5
-    imgui.SetCursorScreenPos({ min_x + pad, text_y })
+function mark_width(w)
+    if w > (ui._fit_now or 0) then
+        ui._fit_now = w
+    end
 end
 
--- Draw a progress bar with content overlaid on top.
--- content_fn receives (min_x, min_y, max_x, max_y) bar rect for advanced positioning.
--- Pass add_spacing = false to suppress the default post-bar spacing.
+-- Space between a row's text and the edges of its well. 2px still read as
+-- flush against the bar, so the inset is 6px on each side.
+local ROW_PAD_X = 6
+
+-- The next widget, `item_w` wide, stays on this line. It sits `min_gap` after the
+-- last item, or just inside the right pad once the panel is wider than this line.
+-- The width remembered for fitting is the unstretched line, so a short row can shrink.
+local function place_after(min_gap, item_w)
+    local left_end = select(1, imgui.GetItemRectMax())
+    local row_x = ui._row_x or left_end
+    local natural = (left_end - row_x) + min_gap + item_w
+    ui._natural = math.max(ui._natural or 0, natural)
+    -- fit_w is the well, including the right pad. Stop the widget short of that pad
+    -- so the pad stays 2px and the row does not grow a little every frame.
+    local fitted = (ui.fit_w or 0) - ROW_PAD_X
+    if fitted < natural then
+        fitted = natural
+    end
+    local gap = math.max(min_gap, fitted - (left_end - row_x) - item_w)
+    imgui.SameLine(0, gap)
+end
+
+-- A row. The well always covers the panel width from last frame (ui.fit_w).
+-- The items stay their real width, so a short line does not lock the window open.
+-- fraction nil draws no meter. The meter is the /vana teal.
+-- COLORS.dark_grey is not yet known, so the fill is duller.
+-- content_fn receives (x, y, x, y); right-side pieces use place_after.
 local function draw_bar_with_overlay(fraction, count_text, bar_color, content_fn, add_spacing)
-    local bx, by, bx2, by2 = draw_progress_bar(fraction, count_text, bar_color)
-    local after_x, after_y = imgui.GetCursorScreenPos()
-    begin_bar_overlay(bx, by, by2)
-    if content_fn then
-        content_fn(bx, by, bx2, by2)
+    local has_meter = fraction ~= nil
+    local pad_y = S(1)
+    local dl = imgui.GetWindowDrawList()
+    local split = false
+    local ok_method, method = pcall(function() return dl.ChannelsSplit end)
+    if ok_method and type(method) == 'function' then
+        split = pcall(function()
+            dl:ChannelsSplit(2)
+            dl:ChannelsSetCurrent(1)
+        end)
     end
-    imgui.SetCursorScreenPos({ after_x, after_y })
+
+    imgui.BeginGroup()
+    if pad_y > 0 then
+        imgui.Dummy({ 0, pad_y })
+    end
+    -- _row_x is the well's left, so the left pad is part of the measured line.
+    local row_x = select(1, imgui.GetCursorScreenPos())
+    ui._row_x = row_x
+    ui._natural = nil
+    imgui.Dummy({ ROW_PAD_X, 1 })
+    imgui.SameLine(0, 0)
+    local cx, cy = imgui.GetCursorScreenPos()
+    if content_fn then
+        content_fn(cx, cy, cx, cy)
+    end
+    if count_text and count_text ~= '' then
+        place_after(S(8), piece_w(count_text))
+        local hex = (bar_color == COLORS.grey_bar) and HEX.dim or HEX.text2
+        imgui.TextColored(rgba(hex), count_text)
+    end
+    imgui.SameLine(0, 0)
+    imgui.Dummy({ ROW_PAD_X, 1 })
+    if has_meter then
+        imgui.Dummy({ 0, S(4) })
+    end
+    if pad_y > 0 then
+        imgui.Dummy({ 0, pad_y })
+    end
+    imgui.EndGroup()
+
+    local x1, y1 = imgui.GetItemRectMin()
+    local x2, y2 = imgui.GetItemRectMax()
+    local row_w = math.max(1, x2 - x1)
+    local row_h = math.max(1, y2 - y1)
+    -- _natural ends at the right-hand text. The right dummy is the other 2px.
+    -- A short row (oak cudgel, Numbing Norman) must not report the stretched
+    -- width, or the panel could never shrink back to the text.
+    mark_width(ui._natural and (ui._natural + ROW_PAD_X) or row_w)
+    local well_w = math.max(row_w, ui.fit_w or 0)
+
+    local function paint_back()
+        local radius = S(3)
+        fill(dl, x1, y1, well_w, row_h, HEX.well, radius, 1)
+        outline(dl, x1, y1, well_w, row_h, HEX.line, radius, 1)
+        if not has_meter or well_w <= S(8) then
+            return
+        end
+        local mh = math.max(2, S(3))
+        local mx = x1 + S(4)
+        local mw = well_w - S(8)
+        local my = y2 - S(2) - mh
+        fill(dl, mx, my, mw, mh, HEX.off, mh / 2, 1)
+        local frac = math.max(0, math.min(1, fraction or 0))
+        if frac <= 0 then
+            return
+        end
+        local meter = HEX.teal
+        if bar_color == COLORS.dark_grey then
+            meter = mix(HEX.teal, HEX.off, 0.45)
+        end
+        fill(dl, mx, my, math.max(mh, mw * frac), mh, meter, mh / 2, 1)
+    end
+
+    if split then
+        pcall(function() dl:ChannelsSetCurrent(0) end)
+        paint_back()
+        pcall(function() dl:ChannelsMerge() end)
+    elseif has_meter then
+        local mh = math.max(2, S(3))
+        local my = y2 - S(2) - mh
+        fill(dl, x1, my, well_w, mh, HEX.off, mh / 2, 1)
+    end
     if add_spacing ~= false then
-        imgui.Spacing(SPACING)
+        imgui.Dummy({ 0, S(1) })
     end
 end
 
--- Convenience: draw a static (grey, empty) bar with overlaid content
+-- A line with no meter: a location, a signed item, fallback text.
 local function draw_static_bar(content_fn, add_spacing)
-    draw_bar_with_overlay(0, "", COLORS.dark_grey, content_fn, add_spacing)
+    draw_bar_with_overlay(nil, '', nil, content_fn, add_spacing)
+end
+
+-- Amber or teal callout: a wash, a stripe down the left, the line in that colour.
+local function draw_notice(text, hex)
+    local pad = indent_chrome()
+    local h = S(18)
+    local tw = measure(text, face('text'), SMALL + 1)
+    local w = tw + S(10)
+    local x, y = imgui.GetCursorScreenPos()
+    imgui.Dummy({ w, h })
+    mark_width(pad + w)
+    local dl = imgui.GetWindowDrawList()
+    fill(dl, x, y, w, h, hex, S(3), 0.12)
+    local left = ImDrawFlags_RoundCornersLeft or ImDrawCornerFlags_Left
+    fill(dl, x, y, S(2), h, hex, S(2), 1, left)
+    text_mid(dl, x + S(6), y + h / 2, text, hex, face('text'), SMALL + 1)
+end
+
+local STYLE_COLORS = nil
+
+local function push_window_style()
+    if STYLE_COLORS == nil then
+        STYLE_COLORS = {
+            { ImGuiCol_Text, rgba(HEX.text) },
+            { ImGuiCol_TextDisabled, rgba(HEX.faint) },
+            { ImGuiCol_WindowBg, rgba(HEX.bg) },
+            { ImGuiCol_ChildBg, rgba(HEX.bg) },
+            { ImGuiCol_PopupBg, rgba(HEX.popup) },
+            { ImGuiCol_Border, rgba(HEX.border) },
+            { ImGuiCol_Separator, rgba(HEX.line) },
+            { ImGuiCol_ScrollbarBg, rgba(HEX.bg, 0) },
+            { ImGuiCol_ScrollbarGrab, rgba('#3A4158') },
+            { ImGuiCol_ScrollbarGrabHovered, rgba('#4A5270') },
+            { ImGuiCol_ScrollbarGrabActive, rgba(HEX.accent_lo) },
+        }
+    end
+    for _, entry in ipairs(STYLE_COLORS) do
+        imgui.PushStyleColor(entry[1], entry[2])
+    end
+    -- BAR_PAD_X is the gap outside each quest well. Titles, headers, and notices
+    -- indent themselves further by CHROME_PAD_X.
+    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, { BAR_PAD_X, S(4) })
+    imgui.PushStyleVar(ImGuiStyleVar_WindowRounding, S(5))
+    imgui.PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1)
+    imgui.PushStyleVar(ImGuiStyleVar_FrameRounding, S(3))
+    imgui.PushStyleVar(ImGuiStyleVar_PopupRounding, S(5))
+    imgui.PushStyleVar(ImGuiStyleVar_PopupBorderSize, 1)
+    imgui.PushStyleVar(ImGuiStyleVar_ItemSpacing, { S(4), S(2) })
+    imgui.PushStyleVar(ImGuiStyleVar_ScrollbarSize, S(6))
+    imgui.PushStyleVar(ImGuiStyleVar_ScrollbarRounding, S(3))
+end
+
+local function pop_window_style()
+    imgui.PopStyleVar(9)
+    imgui.PopStyleColor(#STYLE_COLORS)
+end
+
+local function draw_title()
+    local pad = indent_chrome()
+    local h = S(18)
+    local x, y = imgui.GetCursorScreenPos()
+    imgui.Dummy({ 0, h })
+    local dl = imgui.GetWindowDrawList()
+    local cy = y + h / 2
+    local title_font = face('semi')
+    local title_size = BODY
+    text_mid(dl, x, cy, 'Goldilox', HEX.white, title_font, title_size)
+    local title_w = measure('Goldilox', title_font, title_size)
+    text_mid(dl, x + title_w + S(6), cy, 'Daily quests', HEX.faint, face('text'), SMALL)
+    local note_w = measure('Daily quests', face('text'), SMALL)
+    local title_end = title_w + S(6) + note_w
+    -- Last frame's content width puts the × at the corner without forcing a wide panel.
+    -- fit_w is the panel width from the window's left edge. x is already inset.
+    local close_box = S(14) * 1.5
+    local edge_inset = pad + S(6)
+    local room = math.max(title_end + S(10), (ui.fit_w or 0) - pad - edge_inset)
+    local cx = x + room
+    local content_left = x - pad
+    mark_width(cx + close_box / 2 - content_left)
+    local restore_x, restore_y = imgui.GetCursorScreenPos()
+    imgui.SetCursorScreenPos({ cx - close_box / 2, cy - close_box / 2 })
+    imgui.InvisibleButton('##goldilox.close', { close_box, close_box })
+    local close_hover = imgui.IsItemHovered()
+    if imgui.IsItemClicked(0) then
+        ui.show[1] = false
+    end
+    imgui.SetCursorScreenPos({ restore_x, restore_y })
+    glyph(dl, 'close', cx, cy, close_hover and HEX.rose or HEX.dim, 1.5)
+    local span = math.max(ui.fit_w or 0, cx + close_box / 2 - content_left)
+    dl:AddLine({ content_left, y + h }, { content_left + span, y + h }, u32(HEX.border), 1)
+end
+
+local function draw_shadow()
+    local ok, dl = pcall(imgui.GetBackgroundDrawList)
+    if not ok or dl == nil then
+        return
+    end
+    local x, y = imgui.GetWindowPos()
+    local w, h = imgui.GetWindowSize()
+    dl:AddRectFilled({ x - S(1), y + S(1) }, { x + w + S(1), y + h + S(3) }, u32('#000000', 0.35), S(6))
 end
 
 -- Palalumin zone name fixups: in-game names lack apostrophes that the wiki URLs need
@@ -115,15 +609,20 @@ local function draw_interactive_text(text, color, tooltip_text, on_click_fn)
     imgui.TextColored(color, text)
     local min_x, min_y = imgui.GetItemRectMin()
     local max_x, max_y = imgui.GetItemRectMax()
+    local hovered = imgui.IsItemHovered()
     local draw_list = imgui.GetWindowDrawList()
+    local hot = hovered and color == COLORS.link
+    if hot then
+        draw_list:AddText({ min_x, min_y }, u32(HEX.accent2), text)
+    end
     local a = math.floor((color[4] or 1.0) * 255)
     local b = math.floor((color[3] or 0) * 255)
     local g = math.floor((color[2] or 0) * 255)
     local r = math.floor((color[1] or 0) * 255)
-    local col_u32 = bit.bor(bit.lshift(a, 24), bit.lshift(b, 16), bit.lshift(g, 8), r)
+    local col_u32 = hot and u32(HEX.accent2) or bit.bor(bit.lshift(a, 24), bit.lshift(b, 16), bit.lshift(g, 8), r)
     draw_list:AddLine({ min_x, max_y }, { max_x, max_y }, col_u32, 1.0)
-    if imgui.IsItemHovered() then
-        imgui.SetTooltip(tooltip_text)
+    if hovered then
+        show_tooltip(tooltip_text)
     end
     if imgui.IsItemClicked(0) then
         on_click_fn()
@@ -191,8 +690,6 @@ local function draw_kill_at(target, zone, label_color, highlight_color, opts)
     imgui.TextColored(label_color, " at ")
     imgui.SameLine()
     draw_zone_link(zone, highlight_color, opts.palalumin)
-    imgui.SameLine()
-    imgui.TextColored(COLORS.white, "     ")
 end
 
 -- Pick label / highlight colors based on completion state
@@ -214,11 +711,31 @@ end
 -- Count how many of a given item the player has in their inventory
 -- Checks container: Inventory(0) only
 -- Returns: number of items found, or nil if inventory not accessible
-local function get_item_count(item_name)
-    local ok_res, target_item = pcall(function()
-        return AshitaCore:GetResourceManager():GetItemByName(item_name, 0)
+-- Resolve an item id without letting a bad lookup abort the frame.
+-- Language id varies by client, so try the common Ashita indexes.
+local function lookup_item_id(item_name)
+    local ok_rm, resources = pcall(function()
+        return AshitaCore:GetResourceManager()
     end)
-    if not ok_res or not target_item then
+    if not ok_rm or not resources then
+        return nil
+    end
+    for _, lang in ipairs({ 0, 1, 2, 3 }) do
+        local ok, id = pcall(function()
+            local item = resources:GetItemByName(item_name, lang)
+            if item == nil then return nil end
+            return item.Id
+        end)
+        if ok and type(id) == 'number' and id > 0 then
+            return id
+        end
+    end
+    return nil
+end
+
+local function get_item_count(item_name)
+    local item_id = lookup_item_id(item_name)
+    if not item_id then
         return nil
     end
 
@@ -232,11 +749,15 @@ local function get_item_count(item_name)
     local total = 0
     -- Check inventory (container 0), max 80 slots
     for i = 0, 79 do
-        local ok, entry = pcall(function()
-            return inventory:GetContainerItem(0, i)
+        local ok, count = pcall(function()
+            local entry = inventory:GetContainerItem(0, i)
+            if entry == nil or entry.Id ~= item_id then
+                return 0
+            end
+            return entry.Count or 0
         end)
-        if ok and entry and entry.Id == target_item.Id then
-            total = total + entry.Count
+        if ok and type(count) == 'number' then
+            total = total + count
         end
     end
     return total
@@ -263,9 +784,80 @@ local function get_plain_status(npc, handler, daily)
     elseif handler.status ~= nil then
         local s = handler.status(daily)
         if s then return strip_colors(s), COLORS.white end
+        -- Quest is active even when the item or target has not been parsed yet.
+        if daily.message then return strip_colors(daily.message), COLORS.white end
         return nil
     else
         return daily.message, COLORS.white
+    end
+end
+
+-- The ImGui window name. VanaCore's Layout page uses this string as the window's id.
+local LAYOUT_WINDOW = 'Goldilox - Daily Quests'
+
+local function vana_layout()
+    local api = rawget(_G, 'vana')
+    local layout = api and api.layout
+    if layout == nil or layout.set == nil then
+        return nil
+    end
+    return api, layout
+end
+
+-- True once config\layout.json has this window, so a later launch does not
+-- write over a place or scale set from the Layout page.
+local function layout_file_has_window(root)
+    local file = io.open(root .. '\\config\\layout.json', 'rb')
+    if file == nil then
+        return false
+    end
+    local text = file:read('*a') or ''
+    file:close()
+    return text:find('"Goldilox - Daily Quests"', 1, true) ~= nil
+end
+
+-- Last place ImGui saved, used when the panel is closed so Layout can still list it.
+local function imgui_ini_pos(root)
+    local file = io.open(root .. '\\config\\imgui.ini', 'rb')
+    if file == nil then
+        return nil
+    end
+    local text = file:read('*a') or ''
+    file:close()
+    local x, y = text:match('%[Window%]%[Goldilox %- Daily Quests%]\r?\nPos=(%-?%d+),(%-?%d+)')
+    if x == nil then
+        return nil
+    end
+    return tonumber(x), tonumber(y)
+end
+
+-- VanaCore records an ImGui window on the Addons Layout page after it has a saved
+-- place. Remember this panel once, at its current position, with no extra scale
+-- (the panel already sizes itself from the screen height).
+local function register_layout(x, y)
+    if ui._layout_set then
+        return
+    end
+    local api, layout = vana_layout()
+    if api == nil then
+        return
+    end
+    local root = api.paths and api.paths.install
+    if type(root) == 'string' and layout_file_has_window(root) then
+        ui._layout_set = true
+        return
+    end
+    if x == nil or y == nil then
+        if type(root) ~= 'string' then
+            return
+        end
+        x, y = imgui_ini_pos(root)
+    end
+    if type(x) ~= 'number' or type(y) ~= 'number' then
+        return
+    end
+    if pcall(layout.set, LAYOUT_WINDOW, x, y, 1) then
+        ui._layout_set = true
     end
 end
 
@@ -282,6 +874,8 @@ end
 --   palalumin_quest_order - ordered list of palalumin quest names
 --   palalumin_quests  - palalumin quest handler table
 function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalumin_quests)
+    -- Listed on the Layout page even while this panel is closed, same as AMAN Tracker.
+    register_layout()
     if not ui.show[1] then
         return
     end
@@ -290,12 +884,14 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
         return
     end
 
-    -- Check if there's anything incomplete to display; hide UI if everything is done
+    -- Hide the window only when nothing is still active.
+    -- A flagged quest line with no stored item yet is still active.
     local has_incomplete = false
+    local dailies = status.dailies or {}
+    local pala_quests = status.palalumin_quests or {}
 
-    -- Check goblin dailies: any non-complete quest means something to show
     for _, npc in ipairs(goblin_order) do
-        local daily = status.dailies[npc]
+        local daily = dailies[npc]
         if daily ~= nil and daily.status ~= 'complete' then
             has_incomplete = true
             break
@@ -306,7 +902,7 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
     if not has_incomplete then
         local goblin_completed = 0
         for _, npc in ipairs(goblin_order) do
-            if status.dailies[npc] and status.dailies[npc].status == 'complete' then
+            if dailies[npc] and dailies[npc].status == 'complete' then
                 goblin_completed = goblin_completed + 1
             end
         end
@@ -315,14 +911,22 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
         end
     end
 
-    -- Check palalumin quests: any non-completed quest means something to show
+    -- Palalumin stays visible once flagged until every quest is known complete.
+    -- Missing rows mean the quests are active and no item has been detected yet.
     if not has_incomplete and status.palalumin_flagged then
+        local known = 0
         for _, quest in ipairs(palalumin_quest_order) do
-            local daily = status.palalumin_quests[quest]
-            if daily and not daily.completed then
-                has_incomplete = true
-                break
+            local daily = pala_quests[quest]
+            if daily then
+                known = known + 1
+                if not daily.completed then
+                    has_incomplete = true
+                    break
+                end
             end
+        end
+        if not has_incomplete and known < #palalumin_quest_order then
+            has_incomplete = true
         end
     end
 
@@ -330,31 +934,55 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
         return
     end
 
+    update_scale()
+    tick()
+    fonts_begin()
+
+    -- No minimum width: the panel hugs the widest line. A previous constraint would keep it wide.
     imgui.SetNextWindowSizeConstraints({ 0, 0 }, { FLT_MAX, FLT_MAX })
     -- Hold Shift to drag the window; otherwise it stays locked in place
     local shift_held = ui.shift_held
-    local win_flags = bit.bor(ImGuiWindowFlags_AlwaysAutoResize, ImGuiWindowFlags_NoTitleBar)
+    local win_flags = bit.bor(
+        ImGuiWindowFlags_AlwaysAutoResize,
+        ImGuiWindowFlags_NoTitleBar,
+        ImGuiWindowFlags_NoResize,
+        ImGuiWindowFlags_NoScrollbar,
+        ImGuiWindowFlags_NoScrollWithMouse,
+        ImGuiWindowFlags_NoCollapse,
+        ImGuiWindowFlags_NoNavInputs
+    )
     if not shift_held then
         win_flags = bit.bor(win_flags, ImGuiWindowFlags_NoMove)
     end
-    if imgui.Begin('Goldilox - Daily Quests', ui.show, win_flags) then
+    push_window_style()
+    local font_pushed = false
+    if DYNAMIC and fonts.ready and fonts.text then
+        imgui.PushFont(fonts.text, S(BODY))
+        font_pushed = true
+    end
+    if imgui.Begin(LAYOUT_WINDOW, ui.show, win_flags) then
+        local place_x, place_y = imgui.GetWindowPos()
+        register_layout(place_x, place_y)
+        ui._fit_now = 0
+        draw_title()
 
         -- Goblin dailies
+        local tracked_dailies = status.dailies or {}
         local has_goblin_dailies = false
         for _, npc in ipairs(goblin_order) do
-            if status.dailies[npc] ~= nil then
+            if tracked_dailies[npc] ~= nil then
                 has_goblin_dailies = true
                 break
             end
         end
 
         if has_goblin_dailies then
-            if draw_section_header('Goblin Dailies  ') then
+            if draw_section_header('Goblin Dailies') then
 
             local completed = 0
             for _, npc in ipairs(goblin_order) do
                 local handler = handlers[npc]
-                local daily = status.dailies[npc]
+                local daily = tracked_dailies[npc]
                 if daily ~= nil then
                     if daily.status == 'complete' then
                         completed = completed + 1
@@ -366,25 +994,12 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                             imgui.TextColored(COLORS.grey_text, "Return to " .. npc .. ".")
                         end)
                     elseif npc == "Fishstix" and daily.zone then
-                        draw_bar_with_overlay(0, "", COLORS.dark_grey, function(bx, by, bx2, by2)
-                            local right_text = daily.hint or "/huh motion"
-                            local right_w = imgui.CalcTextSize(right_text)
-                            local pad = 4
-                            local clip_right = bx2 - right_w - pad * 2
-
-                            -- Draw left content clipped so it can't overlap the right link
-                            local draw_list = imgui.GetWindowDrawList()
-                            draw_list:PushClipRect({ bx, by }, { clip_right, by2 }, true)
+                        local right_text = daily.hint or "/huh motion"
+                        draw_bar_with_overlay(nil, "", nil, function()
                             imgui.TextColored(COLORS.white, "Secret chest at ")
                             imgui.SameLine()
                             draw_zone_link(daily.zone, COLORS.link)
-                            imgui.SameLine()
-                            imgui.TextColored(COLORS.white, "            ")  -- reserve space for /huh motion
-                            draw_list:PopClipRect()
-
-                            -- Right-justified /huh link
-                            local right_y = by + ((by2 - by) - imgui.GetTextLineHeight()) * 0.5
-                            imgui.SetCursorScreenPos({ bx2 - right_w - pad, right_y })
+                            place_after(S(12), piece_w(right_text))
                             draw_command_link(right_text, COLORS.link, "/huh motion", "Send /huh motion")
                         end)
                     elseif npc == "Murdox" and daily.count and daily.target and daily.zone then
@@ -427,8 +1042,6 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                             imgui.TextColored(label_color, " found at ")
                             imgui.SameLine()
                             draw_zone_link(daily.zone, highlight_color)
-                            imgui.SameLine()
-                            imgui.TextColored(label_color, "    ")  -- reserve space for count
                         end)
                     else
                         -- Fallback for unrecognized state
@@ -444,11 +1057,10 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
 
             -- Goldilox reward status
             if completed > 0 then
-                imgui.Spacing()
                 if status.goldilox_time == status.deadline then
-                    imgui.TextColored(COLORS.green, 'Goldilox: Complete!')
+                    draw_notice('Goldilox: Complete!', HEX.teal)
                 else
-                    imgui.TextColored(COLORS.orange, 'Goldilox: Reward not collected.')
+                    draw_notice('Goldilox: Reward not collected.', HEX.amber)
                 end
             end
             end -- end collapsible goblin section
@@ -457,14 +1069,19 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
         -- Palalumin quests
         if status.palalumin_flagged then
             local flagged = 0
+            local known = 0
+            local pala_rows = status.palalumin_quests or {}
             for _, quest in ipairs(palalumin_quest_order) do
                 local handler = palalumin_quests[quest]
-                local daily = status.palalumin_quests[quest]
+                local daily = pala_rows[quest]
+                if daily then
+                    known = known + 1
+                end
                 if daily and not daily.completed then
                     flagged = flagged + 1
                     if flagged == 1 then
                         imgui.Spacing()
-                        if not draw_section_header('Palalumin Quests  ') then
+                        if not draw_section_header('Palalumin Quests') then
                             break
                         end
                     end
@@ -527,33 +1144,45 @@ function ui.render(status, goblin_order, handlers, palalumin_quest_order, palalu
                             draw_kill_at(target, zone, label_color, highlight_color, { mob_link = true, palalumin = true })
                         end, false)
                     elseif quest == "Find flux" and daily.zone then
-                        draw_bar_with_overlay(0, "", COLORS.dark_grey, function(bx, by, bx2, by2)
+                        draw_bar_with_overlay(nil, "", nil, function()
                             imgui.TextColored(COLORS.white, "Find the Flux in ")
                             imgui.SameLine()
                             draw_zone_link(daily.zone, COLORS.link, true)
-                            imgui.SameLine()
-                            imgui.TextColored(COLORS.white, "    ")  -- reserve space for #sea
-                            local discord_w = imgui.CalcTextSize("#sea")
-                            local discord_y = by + ((by2 - by) - imgui.GetTextLineHeight()) * 0.5
-                            imgui.SetCursorScreenPos({ bx2 - discord_w - 4, discord_y })
+                            place_after(S(16), piece_w("#sea"))
                             draw_link("#sea", COLORS.link, "https://discord.com/channels/696847769444548700/1359317001457242192", "Open CatsEyeXI Discord Channel #sea")
                         end, false)
                     else
                         local s = handler.status(daily)
+                        if not s and daily.message then
+                            s = daily.message
+                        end
                         if s then
                             draw_static_bar(function()
                                 imgui.TextColored(COLORS.white, strip_colors(s))
                             end, false)
                         end
                     end
-                    -- Blank lines after each quest group
-                    imgui.Spacing()
-                    imgui.Spacing()
+
+                end
+            end
+            -- Flagged for the day, but no objective row has been detected yet.
+            if flagged == 0 and known < #palalumin_quest_order then
+                imgui.Spacing()
+                if draw_section_header('Palalumin Quests') then
+                    draw_notice('Quests active', HEX.amber)
                 end
             end
         end
+        if (ui._fit_now or 0) > 0 then
+            ui.fit_w = ui._fit_now
+        end
+        draw_shadow()
     end
     imgui.End()
+    if font_pushed then
+        imgui.PopFont()
+    end
+    pop_window_style()
 end
 
 return ui
